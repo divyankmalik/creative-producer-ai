@@ -1,0 +1,68 @@
+"""Template-method base class shared by all four specialist agents.
+
+Subclasses only implement the four abstract hooks; the generate -> validate
+-> repair control flow below is the architecture and is fully wired.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.models import AgentResult, TaskEnvelope, ValidationReport
+
+
+@dataclass
+class AgentContext:
+    """Mutable working state threaded through one `run()` call."""
+
+    envelope: TaskEnvelope
+    input_artifacts: dict[str, Any] = field(default_factory=dict)
+    repair_hint: str | None = None
+
+
+class BaseAgent(ABC):
+    agent_name: str
+    max_attempts: int = 3
+
+    async def run(self, env: TaskEnvelope) -> AgentResult:
+        ctx = await self.build_context(env)
+
+        last_report: ValidationReport | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            generated = await self.generate(ctx)
+            report = await self.validate(ctx, generated)
+
+            if report.ok:
+                return await self.build_output(ctx, generated)
+
+            last_report = report
+            ctx.repair_hint = report.repair_hint
+
+        failures = last_report.failures if last_report else ["unknown validation failure"]
+        return AgentResult(
+            ok=False,
+            error_code="validation_failed",
+            error_message="; ".join(failures),
+        )
+
+    @abstractmethod
+    async def build_context(self, env: TaskEnvelope) -> AgentContext:
+        """Fetch and assemble input_artifact_slugs into ctx.input_artifacts."""
+
+    @abstractmethod
+    async def generate(self, ctx: AgentContext) -> Any:
+        """Call the LLM (via llm/structured.py) to produce a draft payload.
+
+        Must honor ctx.repair_hint when set (i.e. on retry after a failed
+        validation), rather than regenerating blindly from scratch.
+        """
+
+    @abstractmethod
+    async def validate(self, ctx: AgentContext, generated: Any) -> ValidationReport:
+        """Run this agent's validators/* checks against the generated draft."""
+
+    @abstractmethod
+    async def build_output(self, ctx: AgentContext, generated: Any) -> AgentResult:
+        """Shape a validated draft into the AgentResult persisted as an artifact."""
