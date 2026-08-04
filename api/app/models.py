@@ -20,24 +20,31 @@ from pydantic import BaseModel, Field
 
 
 class ProjectStatus(StrEnum):
-    PLANNING = "planning"
-    RUNNING = "running"
-    BLOCKED = "blocked"
-    AWAITING_GATE = "awaiting_gate"
-    DONE = "done"
-    FAILED = "failed"
+    """Lifecycle of a whole project, driven by the Director's LangGraph run."""
+
+    PLANNING = "planning"          # `plan` node hasn't expanded the template into task_nodes yet
+    RUNNING = "running"             # `schedule` is actively dispatching ready nodes to agents
+    BLOCKED = "blocked"             # a hard-dependency failure blocked the remaining DAG
+    AWAITING_GATE = "awaiting_gate"  # paused at a human gate (e.g. outline_review) via interrupt_before
+    DONE = "done"                   # `finalize` ran, all required nodes succeeded
+    FAILED = "failed"                # `finalize` ran, but a required node never recovered
 
 
 class NodeStatus(StrEnum):
-    QUEUED = "queued"
-    READY = "ready"
-    RUNNING = "running"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    BLOCKED = "blocked"
-    SKIPPED = "skipped"
+    """Lifecycle of a single task_nodes row (one DAG node = one artifact to produce)."""
+
+    QUEUED = "queued"        # created by `plan`, dependencies not yet satisfied
+    READY = "ready"           # hard dependencies satisfied, eligible for scheduler.ready_set()
+    RUNNING = "running"       # currently being executed by an agent
+    SUCCEEDED = "succeeded"   # agent returned AgentResult(ok=True); artifact persisted
+    FAILED = "failed"         # agent exhausted retries without a valid result
+    BLOCKED = "blocked"       # a hard dependency failed; see scheduler.block_hard_dependents
+    SKIPPED = "skipped"       # never scheduled, e.g. made moot by a gate rejection
 
 
+# "hard" deps must succeed before a node can run; "soft" deps are best-effort
+# inputs (used if present, ignored if missing/stale) and never block scheduling
+# or propagate failure. See scheduler.ready_set / block_hard_dependents.
 DependencyKind = Literal["hard", "soft"]
 
 
@@ -47,11 +54,20 @@ DependencyKind = Literal["hard", "soft"]
 
 
 class Dependency(BaseModel):
+    """One edge in a TaskNode's dependency list, e.g. {"node_key": "content.outline", "kind": "hard"}."""
+
     node_key: str
     kind: DependencyKind = "hard"
 
 
 class TaskNode(BaseModel):
+    """One row of `task_nodes` — a single unit of work in the project DAG.
+
+    `agent` says which specialist (research/content/design/publishing) owns it;
+    `capability` says which of that agent's methods to invoke (e.g. "outline",
+    "script"). `dependencies` is the adjacency list scheduler.py walks.
+    """
+
     id: UUID
     project_id: UUID
     node_key: str
@@ -67,6 +83,16 @@ class TaskNode(BaseModel):
 
 
 class Artifact(BaseModel):
+    """One row of `artifacts` — the persisted output of a TaskNode.
+
+    `current_version` + `payload` are what the trigger in 001_init.sql snapshots
+    into `artifact_versions` on every payload write. `is_stale`/`stale_reason` are
+    set by services/staleness.py when a hard upstream dependency changes after
+    this artifact was generated (mark_dependents_stale in the migration).
+    `edited_by` distinguishes a human hand-edit (e.g. "user") from an agent
+    regeneration (e.g. the model name).
+    """
+
     id: UUID
     project_id: UUID
     node_key: str
@@ -84,6 +110,8 @@ class Artifact(BaseModel):
 
 
 class TaskGraph(BaseModel):
+    """A project's full set of TaskNodes, as the Director holds them in memory."""
+
     project_id: UUID
     nodes: list[TaskNode]
 
@@ -92,14 +120,42 @@ class TaskGraph(BaseModel):
         raise NotImplementedError
 
 
+class Project(BaseModel):
+    """One row of `projects` — the content idea plus generation params
+    (audience, tone, target length, etc.) agents read from in build_context.
+    """
+
+    id: UUID
+    title: str
+    idea: str
+    status: ProjectStatus = ProjectStatus.PLANNING
+    params: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
 # ---------------------------------------------------------------------------
 # Director <-> worker contracts
 # ---------------------------------------------------------------------------
+#
+# Workers never talk to each other or query task_nodes/artifacts on their own
+# initiative — the Director resolves a TaskNode into a self-contained
+# TaskEnvelope, an agent's BaseAgent.run() turns that into an AgentResult, and
+# the Director is the only thing that persists it back to Postgres. This pair
+# is the seam between director/ and agents/.
 
 
 class TaskEnvelope(BaseModel):
-    """What the Director hands a worker agent to execute one node."""
+    """What the Director hands a worker agent to execute one node.
 
+    `input_artifact_slugs` are slugs the agent must resolve itself (via
+    services/artifacts.py) to build its context — the envelope carries
+    references, not payloads, so it stays cheap to construct and log.
+    `word_budget` is only meaningful for script-shaped capabilities; other
+    agents ignore it.
+    """
+
+    project_id: UUID
     node_key: str
     agent: str
     capability: str
@@ -111,7 +167,12 @@ class TaskEnvelope(BaseModel):
 
 
 class AgentResult(BaseModel):
-    """What a worker agent hands back to the Director."""
+    """What a worker agent hands back to the Director.
+
+    Exactly one of (artifact_type/slug/payload) or (error_code/error_message)
+    is meaningful, gated by `ok`. The Director persists a successful result via
+    services/artifacts.upsert_artifact and feeds a failed one into triage.decide.
+    """
 
     ok: bool
     artifact_type: str | None = None
@@ -125,6 +186,14 @@ class AgentResult(BaseModel):
 
 
 class ValidationReport(BaseModel):
+    """Result of an agent's validate() hook.
+
+    `repair_hint` is the one field that makes BaseAgent.run's retry loop
+    smarter than "try again": it's a specific, actionable description of what
+    was wrong (e.g. an exact word-count delta, or a list of ungrounded claims)
+    that gets folded into the next generation prompt instead of blind retry.
+    """
+
     ok: bool
     failures: list[str] = Field(default_factory=list)
     repair_hint: str | None = None

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# .env lives at the repo root (see README setup), not under api/, so anchor to
+# this file's location rather than relying on the process's cwd.
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
 
     supabase_url: str
     supabase_service_key: str
@@ -24,5 +29,4 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    # TODO: load and cache Settings() from environment / .env
-    raise NotImplementedError
+    return Settings()  # type: ignore[call-arg]

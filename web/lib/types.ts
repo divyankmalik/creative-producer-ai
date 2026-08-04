@@ -69,7 +69,18 @@ export interface TaskGraph {
   nodes: TaskNode[];
 }
 
+export interface Project {
+  id: string;
+  title: string;
+  idea: string;
+  status: ProjectStatus;
+  params: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface TaskEnvelope {
+  projectId: string;
   nodeKey: string;
   agent: string;
   capability: string;

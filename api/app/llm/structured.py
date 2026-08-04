@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import TypeVar
 
 from pydantic import BaseModel
 
+from app.llm.client import complete
+
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
 async def generate_structured(
@@ -15,6 +21,33 @@ async def generate_structured(
     schema: type[ModelT],
     repair_hint: str | None = None,
 ) -> ModelT:
-    # TODO: call llm/client.py, parse/validate the response against `schema`,
-    # folding `repair_hint` into the prompt when retrying after a validation failure.
-    raise NotImplementedError
+    """Call the LLM with `prompt` plus `schema`'s JSON schema, then parse and
+    validate the response. `repair_hint` (set by BaseAgent.run after a failed
+    validation) is folded into the prompt so the retry fixes the specific
+    problem instead of regenerating from scratch.
+    """
+    full_prompt = _build_prompt(prompt, schema, repair_hint)
+    raw = await complete(full_prompt)
+    return _parse(raw, schema)
+
+
+def _build_prompt(prompt: str, schema: type[BaseModel], repair_hint: str | None) -> str:
+    schema_json = json.dumps(schema.model_json_schema(), indent=2)
+    parts = [
+        prompt,
+        "\nRespond with ONLY a single JSON object matching this schema exactly. "
+        "No prose, no markdown code fences.",
+        schema_json,
+    ]
+    if repair_hint:
+        parts.append(f"\nThe previous attempt failed validation: {repair_hint}\nFix this specific issue.")
+    return "\n".join(parts)
+
+
+def _parse(raw: str, schema: type[ModelT]) -> ModelT:
+    text = _FENCE_RE.sub("", raw.strip()).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"LLM response was not valid JSON: {exc}\nRaw response: {raw!r}") from exc
+    return schema.model_validate(data)

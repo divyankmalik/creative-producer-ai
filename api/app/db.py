@@ -11,8 +11,8 @@ from app.config import get_settings
 
 @lru_cache
 def get_supabase() -> Client:
-    # TODO: create_client(settings.supabase_url, settings.supabase_service_key)
-    raise NotImplementedError
+    settings = get_settings()
+    return create_client(settings.supabase_url, settings.supabase_service_key)
 
 
 async def get_pg_pool():
