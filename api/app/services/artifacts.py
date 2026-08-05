@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
+from app.db import get_supabase
 from app.models import Artifact
 
 
@@ -13,8 +15,19 @@ async def get_artifact(artifact_id: UUID) -> Artifact:
 
 
 async def get_artifact_by_slug(project_id: UUID, slug: str) -> Artifact:
-    # TODO: select from artifacts by (project_id, slug).
-    raise NotImplementedError
+    def _fetch():
+        return (
+            get_supabase()
+            .table("artifacts")
+            .select("*")
+            .eq("project_id", str(project_id))
+            .eq("slug", slug)
+            .single()
+            .execute()
+        )
+
+    response = await asyncio.to_thread(_fetch)
+    return Artifact.model_validate(response.data)
 
 
 async def upsert_artifact(
