@@ -30,6 +30,18 @@ async def get_artifact_by_slug(project_id: UUID, slug: str) -> Artifact:
     return Artifact.model_validate(response.data)
 
 
+async def try_get_artifact_by_slug(project_id: UUID, slug: str) -> Artifact | None:
+    """Like get_artifact_by_slug, but returns None instead of raising when no
+    row matches -- for SOFT dependencies, where "doesn't exist yet" is a
+    normal outcome, not an error (e.g. publishing.seo's dependency on
+    design.thumbnails).
+    """
+    try:
+        return await get_artifact_by_slug(project_id, slug)
+    except Exception:
+        return None
+
+
 async def upsert_artifact(
     project_id: UUID,
     node_key: str,
