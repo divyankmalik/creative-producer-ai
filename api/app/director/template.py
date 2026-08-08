@@ -100,7 +100,54 @@ GATES: list[GateTemplate] = [
 
 
 def expand_template(section_count: int) -> list[NodeTemplate]:
-    # TODO: replace the content.script.sN template entry with N concrete
-    # content.script.s1..sN entries (and rewire content.storyboard's dependency
-    # on each), returning the fully expanded node list for a project.
-    raise NotImplementedError
+    """Replace the content.script.sN placeholder with section_count concrete
+    content.script.s1..sN entries, and rewire content.storyboard's dependency
+    to point at all of them (instead of the placeholder). Relies on
+    NODE_TEMPLATE listing content.script.sN before content.storyboard, so the
+    expanded keys are known by the time storyboard's turn comes up.
+    """
+    if section_count < 1:
+        raise ValueError(f"section_count must be >= 1, got {section_count}")
+
+    expanded: list[NodeTemplate] = []
+    script_node_keys: list[str] = []
+
+    for template in NODE_TEMPLATE:
+        if template.expand_per_section:
+            for i in range(1, section_count + 1):
+                node_key = f"content.script.s{i}"
+                script_node_keys.append(node_key)
+                expanded.append(
+                    NodeTemplate(
+                        node_key=node_key,
+                        agent=template.agent,
+                        capability=template.capability,
+                        dependencies=template.dependencies,  # still [content.outline: hard]
+                    )
+                )
+        elif template.node_key == "content.storyboard":
+            expanded.append(
+                NodeTemplate(
+                    node_key=template.node_key,
+                    agent=template.agent,
+                    capability=template.capability,
+                    dependencies=tuple(DependencyTemplate(key, "hard") for key in script_node_keys),
+                )
+            )
+        else:
+            expanded.append(template)
+
+    return expanded
+
+
+def slug_for_node_key(node_key: str) -> str:
+    """The naming convention every agent already follows for its own output
+    slugs: fully kebab-case, e.g. "content.outline" -> "content-outline",
+    "content.script.s1" -> "content-script-s1", and
+    "design.visual_language" -> "design-visual-language" (underscores get
+    flattened too, not just dots -- DesignAgent hardcodes that slug with a
+    dash, not an underscore). Used by the Director to turn a node's
+    dependency edges into TaskEnvelope.input_artifact_slugs without
+    hardcoding the mapping twice.
+    """
+    return node_key.replace(".", "-").replace("_", "-")

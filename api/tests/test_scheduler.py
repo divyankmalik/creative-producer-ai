@@ -139,3 +139,22 @@ class TestBlockHardDependents:
 
         assert blocked == []
         assert nodes[1].status == NodeStatus.SUCCEEDED
+
+    def test_status_param_supports_skipped_for_fail_soft(self) -> None:
+        """A FAIL_SOFT decision (director/triage.py) cascades with SKIPPED
+        instead of BLOCKED -- dependents must still land in *some* real
+        terminal status, or finalize_node's "all terminal" check never
+        passes and the Director loops forever making no progress.
+        """
+        nodes = [
+            make_node("design.visual_language", status=NodeStatus.FAILED),
+            make_node(
+                "design.thumbnails",
+                dependencies=[Dependency(node_key="design.visual_language", kind="hard")],
+            ),
+        ]
+
+        affected = block_hard_dependents(nodes, "design.visual_language", status=NodeStatus.SKIPPED)
+
+        assert affected == ["design.thumbnails"]
+        assert nodes[1].status == NodeStatus.SKIPPED

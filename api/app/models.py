@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -54,9 +54,18 @@ DependencyKind = Literal["hard", "soft"]
 
 
 class Dependency(BaseModel):
-    """One edge in a TaskNode's dependency list, e.g. {"node_key": "content.outline", "kind": "hard"}."""
+    """One edge in a TaskNode's dependency list.
 
-    node_key: str
+    The DB column (task_nodes.dependencies jsonb, per 001_init.sql) stores
+    this as {"nodeKey": "content.outline", "kind": "hard"} -- camelCase, to
+    match the frontend's TypeScript shape. `populate_by_name=True` lets this
+    model accept both that DB JSON (via the alias) and plain Python
+    construction like Dependency(node_key=..., kind=...) from server code.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    node_key: str = Field(alias="nodeKey")
     kind: DependencyKind = "hard"
 
 

@@ -117,8 +117,14 @@ begin
 end;
 $$ language plpgsql;
 
+-- AFTER, not BEFORE: on a first-time INSERT, the artifacts row doesn't exist
+-- yet at BEFORE-trigger time, so this trigger's own insert into
+-- artifact_versions (which has artifact_id references artifacts(id)) would
+-- violate that foreign key. By AFTER-trigger time the row is already present
+-- (uncommitted but visible within the same transaction), so the FK check
+-- passes for both INSERT and UPDATE.
 create trigger trg_snapshot_artifact_version
-    before insert or update of payload on artifacts
+    after insert or update of payload on artifacts
     for each row
     execute function snapshot_artifact_version();
 

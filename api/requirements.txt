@@ -4,6 +4,10 @@ pydantic==2.10.4
 pydantic-settings==2.7.1
 langgraph==0.2.62
 langgraph-checkpoint-postgres==2.0.13
+# [binary] pulls a prebuilt libpq -- plain `psycopg` needs a system libpq install,
+# which Windows dev machines usually don't have; without this, importing the
+# Postgres checkpointer raises "no pq wrapper available" at runtime.
+psycopg[binary]==3.3.4
 supabase==2.11.0
 asyncpg==0.30.0
 httpx==0.28.1
