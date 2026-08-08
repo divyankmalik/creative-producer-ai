@@ -12,6 +12,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 
 # ---------------------------------------------------------------------------
@@ -53,23 +54,42 @@ DependencyKind = Literal["hard", "soft"]
 # ---------------------------------------------------------------------------
 
 
-class Dependency(BaseModel):
+class CamelModel(BaseModel):
+    """Base for every model that's actually part of the HTTP/DB JSON surface
+    -- auto-camelCases every field's alias (node_key -> nodeKey, created_at
+    -> createdAt, ...) to match web/lib/types.ts, instead of hand-annotating
+    Field(alias=...) on each field one at a time (what Dependency used to do
+    before this existed -- easy to forget on any new field, which is exactly
+    how TaskNode ended up silently NOT matching its own TS type: found via a
+    route test hitting a real KeyError on "nodeKey" in the response JSON).
+
+    `populate_by_name=True` means these models still accept plain snake_case
+    kwargs from server-side Python code (e.g. `TaskNode(node_key=...)`) --
+    the alias only changes what JSON *serialization* looks like, not what
+    Python construction requires.
+
+    Deliberately NOT used by TaskEnvelope/AgentResult/ValidationReport --
+    those are internal Director<->agent contracts, never serialized to JSON
+    for the frontend, so snake_case is fine (and consistent with the rest of
+    the Python codebase) there.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class Dependency(CamelModel):
     """One edge in a TaskNode's dependency list.
 
     The DB column (task_nodes.dependencies jsonb, per 001_init.sql) stores
     this as {"nodeKey": "content.outline", "kind": "hard"} -- camelCase, to
-    match the frontend's TypeScript shape. `populate_by_name=True` lets this
-    model accept both that DB JSON (via the alias) and plain Python
-    construction like Dependency(node_key=..., kind=...) from server code.
+    match the frontend's TypeScript shape.
     """
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    node_key: str = Field(alias="nodeKey")
+    node_key: str
     kind: DependencyKind = "hard"
 
 
-class TaskNode(BaseModel):
+class TaskNode(CamelModel):
     """One row of `task_nodes` — a single unit of work in the project DAG.
 
     `agent` says which specialist (research/content/design/publishing) owns it;
@@ -91,7 +111,7 @@ class TaskNode(BaseModel):
     updated_at: datetime
 
 
-class Artifact(BaseModel):
+class Artifact(CamelModel):
     """One row of `artifacts` — the persisted output of a TaskNode.
 
     `current_version` + `payload` are what the trigger in 001_init.sql snapshots
@@ -129,7 +149,7 @@ class TaskGraph(BaseModel):
         raise NotImplementedError
 
 
-class Project(BaseModel):
+class Project(CamelModel):
     """One row of `projects` — the content idea plus generation params
     (audience, tone, target length, etc.) agents read from in build_context.
     """

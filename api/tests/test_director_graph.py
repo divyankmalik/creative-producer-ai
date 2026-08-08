@@ -19,7 +19,7 @@ from app.agents.content import ContentAgent
 from app.agents.design import DesignAgent
 from app.agents.research import ResearchAgent
 from app.director.graph import (
-    _build_envelope,
+    build_envelope,
     finalize_node,
     gate_node,
     plan_node,
@@ -157,6 +157,45 @@ async def test_schedule_node_retries_failure_under_attempt_budget() -> None:
     mock_upsert.assert_not_awaited()
     last_call = mock_update.call_args_list[-1]
     assert last_call.kwargs.get("increment_attempts") is True
+
+
+@pytest.mark.asyncio
+async def test_schedule_node_increments_attempts_in_memory_across_repeated_ticks() -> None:
+    """Regression test for a real bug found via live testing: node.status was
+    updated in memory on failure, but node.attempts was not -- only the DB
+    row was incremented (via update_task_node's increment_attempts=True).
+    Since decide() reads node.attempts off the same in-memory object on the
+    *next* tick, the Director-level retry budget silently never engaged: a
+    live run hit 24 real attempts on one node (all failing with a transient
+    "Connection error") before LangGraph's own recursion limit -- not
+    NODE_MAX_ATTEMPTS -- finally killed it. This runs schedule_node three
+    times in a row on the same node object, simulating repeated ticks within
+    one continuous graph execution, and asserts attempts actually climbs and
+    HALT engages on schedule.
+    """
+    project_id = uuid4()
+    node = make_task_node(project_id, "research.brief", "research", "brief", attempts=0)
+    state = initial_state(project_id)
+    state["nodes"] = [node]
+    failure = AgentResult(ok=False, error_code="exception", error_message="Connection error.")
+
+    with (
+        patch.object(ResearchAgent, "run", new_callable=AsyncMock, return_value=failure),
+        patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock),
+        patch("app.director.graph.artifacts_service.upsert_artifact", new_callable=AsyncMock),
+    ):
+        await schedule_node(state)
+        assert node.status == NodeStatus.QUEUED
+        assert node.attempts == 1  # NOT still 0 -- this is the actual bug
+
+        await schedule_node(state)
+        assert node.status == NodeStatus.QUEUED
+        assert node.attempts == 2
+
+        result_state = await schedule_node(state)
+        assert node.status == NodeStatus.FAILED  # HALT: budget exhausted, not a 25th retry
+        assert node.attempts == 3
+        assert result_state["done"] is True
 
 
 @pytest.mark.asyncio
@@ -402,7 +441,7 @@ def test_route_after_schedule_defaults_to_schedule() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _build_envelope (pure, no I/O)
+# build_envelope (pure, no I/O)
 # ---------------------------------------------------------------------------
 
 
@@ -414,7 +453,7 @@ def test_build_envelope_derives_section_key_for_script_nodes() -> None:
         attempts=1,
     )
 
-    envelope = _build_envelope(project_id, node)
+    envelope = build_envelope(project_id, node)
 
     assert envelope.params["section_key"] == "s2"
     assert envelope.input_artifact_slugs == ["content-outline"]
@@ -432,6 +471,6 @@ def test_build_envelope_input_slugs_include_soft_dependencies() -> None:
         ],
     )
 
-    envelope = _build_envelope(project_id, node)
+    envelope = build_envelope(project_id, node)
 
     assert set(envelope.input_artifact_slugs) == {"content-outline", "design-thumbnails"}

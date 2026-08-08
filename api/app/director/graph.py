@@ -50,7 +50,10 @@ from app.services.projects import get_project, update_project_status
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-_AGENT_REGISTRY: dict[str, type[BaseAgent]] = {
+# Not private: routes/artifacts.py's regenerate_artifact reuses this and
+# build_envelope() below directly, rather than duplicating the agent
+# dispatch/envelope-building logic that already lives here.
+AGENT_REGISTRY: dict[str, type[BaseAgent]] = {
     "research": ResearchAgent,
     "content": ContentAgent,
     "design": DesignAgent,
@@ -87,6 +90,14 @@ async def schedule_node(state: DirectorState) -> DirectorState:
     back here for another tick, pauses at a gate, or moves to finalize.
     """
     nodes = state["nodes"]
+    # Reset at the top of every tick, not just set-when-hit: a resumed graph
+    # (after gate approval) can otherwise carry a stale pending_gate_key from
+    # before the approval into a tick where nothing is actually gated anymore.
+    # Also defends against a real LangGraph quirk found via live testing:
+    # aupdate_state()-ing this field to None can make the key vanish from
+    # state entirely rather than sticking as an explicit None (see
+    # route_after_schedule's .get() below for the read-side half of this).
+    state["pending_gate_key"] = None
     # Uncapped on purpose: ready_set's max_parallel cap has no notion of
     # gates, so a gated node consuming one of the N slots would silently
     # starve other, unrelated ready work (e.g. publishing.seo) from ever
@@ -146,7 +157,9 @@ async def finalize_node(state: DirectorState) -> DirectorState:
 
 
 def route_after_schedule(state: DirectorState) -> Literal["gate", "schedule", "finalize"]:
-    if state["pending_gate_key"] is not None:
+    # .get(), not state[...]: a resumed checkpoint can have this key missing
+    # entirely rather than explicitly None (see schedule_node's comment).
+    if state.get("pending_gate_key") is not None:
         return "gate"
     if state["done"]:
         return "finalize"
@@ -170,12 +183,12 @@ def _all_terminal(nodes: list[TaskNode]) -> bool:
 
 
 async def _run_node(project_id: UUID, node: TaskNode) -> AgentResult:
-    agent_cls = _AGENT_REGISTRY[node.agent]
-    envelope = _build_envelope(project_id, node)
+    agent_cls = AGENT_REGISTRY[node.agent]
+    envelope = build_envelope(project_id, node)
     return await agent_cls().run(envelope)
 
 
-def _build_envelope(project_id: UUID, node: TaskNode) -> TaskEnvelope:
+def build_envelope(project_id: UUID, node: TaskNode) -> TaskEnvelope:
     params = dict(node.params)
     if node.node_key.startswith("content.script."):
         # ContentAgent.build_context requires params["section_key"]; derived
@@ -211,6 +224,7 @@ async def _apply_result(project_id: UUID, nodes: list[TaskNode], node: TaskNode,
             payload=result.payload or {},
             summary=result.summary,
             model=result.model,
+            dependencies=node.dependencies,
         )
         node.status = NodeStatus.SUCCEEDED
         await task_nodes_service.update_task_node(node.id, status=NodeStatus.SUCCEEDED)
@@ -219,6 +233,14 @@ async def _apply_result(project_id: UUID, nodes: list[TaskNode], node: TaskNode,
     # RETRY, FAIL_SOFT, and HALT all represent a failed attempt.
     new_status = NodeStatus.QUEUED if decision == Decision.RETRY else NodeStatus.FAILED
     node.status = new_status
+    # Must increment in memory too, not just in the DB (update_task_node's
+    # increment_attempts=True) -- decide() reads node.attempts off this same
+    # in-memory object on the *next* tick. Without this, the DB's count was
+    # accurate but decide() never saw it move past its starting value, so
+    # the Director-level retry budget never actually engaged: a real live
+    # run hit 24 DB-recorded attempts on one node before LangGraph's own
+    # recursion limit (not NODE_MAX_ATTEMPTS) finally killed it.
+    node.attempts += 1
     await task_nodes_service.update_task_node(
         node.id,
         status=new_status,

@@ -52,6 +52,26 @@ async def list_task_nodes(project_id: UUID) -> list[TaskNode]:
     return [TaskNode.model_validate(row) for row in response.data]
 
 
+async def get_task_node_by_key(project_id: UUID, node_key: str) -> TaskNode:
+    """Used by POST /artifacts/{id}/regenerate to find the node that owns a
+    given artifact (an Artifact row carries node_key, not a task_node id).
+    """
+
+    def _fetch():
+        return (
+            get_supabase()
+            .table("task_nodes")
+            .select("*")
+            .eq("project_id", str(project_id))
+            .eq("node_key", node_key)
+            .single()
+            .execute()
+        )
+
+    response = await asyncio.to_thread(_fetch)
+    return TaskNode.model_validate(response.data)
+
+
 async def update_task_node(
     node_id: UUID,
     *,

@@ -130,13 +130,19 @@ create trigger trg_snapshot_artifact_version
 
 -- ---------------------------------------------------------------------------
 -- mark_dependents_stale: recursive walk over hard artifact_dependencies edges
+--
+-- Returns the slugs of every artifact marked stale (not just a count) --
+-- PATCH /artifacts/{id} needs to tell the frontend exactly what just went
+-- stale, and a bare count can't answer "which ones." Returning `table(slug
+-- text)` instead of `integer` is a set-returning function, so callers get a
+-- row per affected artifact directly off the UPDATE's RETURNING clause, no
+-- follow-up query needed.
 -- ---------------------------------------------------------------------------
 
 create or replace function mark_dependents_stale(p_artifact_id uuid, p_reason text)
-returns integer as $$
-declare
-    affected_count integer;
+returns table(slug text) as $$
 begin
+    return query
     with recursive dependents as (
         select ad.artifact_id, 1 as depth
         from artifact_dependencies ad
@@ -150,18 +156,13 @@ begin
         join dependents d on ad.depends_on_artifact_id = d.artifact_id
         where ad.kind = 'hard'
           and d.depth < 10
-    ),
-    updated as (
-        update artifacts
-        set is_stale = true,
-            stale_reason = p_reason,
-            updated_at = now()
-        where id in (select distinct artifact_id from dependents)
-        returning id
     )
-    select count(*) into affected_count from updated;
-
-    return affected_count;
+    update artifacts
+    set is_stale = true,
+        stale_reason = p_reason,
+        updated_at = now()
+    where artifacts.id in (select distinct artifact_id from dependents)
+    returning artifacts.slug;
 end;
 $$ language plpgsql;
 

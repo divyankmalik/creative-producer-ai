@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
+from app.db import get_supabase
 from app.routes import artifacts, gates, projects
 
 # psycopg's async mode (used by the LangGraph Postgres checkpointer) can't run
@@ -26,5 +27,12 @@ app.include_router(gates.router)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    # TODO: ping supabase / db pool, return {"status": "ok"}
-    raise NotImplementedError
+    def _ping():
+        return get_supabase().table("projects").select("id").limit(1).execute()
+
+    try:
+        await asyncio.to_thread(_ping)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"database unreachable: {exc}") from exc
+
+    return {"status": "ok"}
