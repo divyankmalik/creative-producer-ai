@@ -128,6 +128,7 @@ async def test_schedule_node_dispatches_ready_node_and_advances_on_success() -> 
         patch.object(ResearchAgent, "run", new_callable=AsyncMock, return_value=result) as mock_run,
         patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock),
         patch("app.director.graph.artifacts_service.upsert_artifact", new_callable=AsyncMock) as mock_upsert,
+        patch("app.director.graph.update_project_status", new_callable=AsyncMock),
     ):
         result_state = await schedule_node(state)
 
@@ -150,6 +151,7 @@ async def test_schedule_node_retries_failure_under_attempt_budget() -> None:
         patch.object(ResearchAgent, "run", new_callable=AsyncMock, return_value=failure),
         patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock) as mock_update,
         patch("app.director.graph.artifacts_service.upsert_artifact", new_callable=AsyncMock) as mock_upsert,
+        patch("app.director.graph.update_project_status", new_callable=AsyncMock),
     ):
         await schedule_node(state)
 
@@ -183,6 +185,7 @@ async def test_schedule_node_increments_attempts_in_memory_across_repeated_ticks
         patch.object(ResearchAgent, "run", new_callable=AsyncMock, return_value=failure),
         patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock),
         patch("app.director.graph.artifacts_service.upsert_artifact", new_callable=AsyncMock),
+        patch("app.director.graph.update_project_status", new_callable=AsyncMock),
     ):
         await schedule_node(state)
         assert node.status == NodeStatus.QUEUED
@@ -214,6 +217,7 @@ async def test_schedule_node_halts_and_blocks_hard_dependents() -> None:
         patch.object(ContentAgent, "run", new_callable=AsyncMock, return_value=failure),
         patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock),
         patch("app.director.graph.artifacts_service.upsert_artifact", new_callable=AsyncMock),
+        patch("app.director.graph.update_project_status", new_callable=AsyncMock),
     ):
         result_state = await schedule_node(state)
 
@@ -245,6 +249,7 @@ async def test_schedule_node_fail_soft_skips_dependents_and_still_reaches_done()
         patch("app.director.graph.decide", return_value=Decision.FAIL_SOFT),
         patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock),
         patch("app.director.graph.artifacts_service.upsert_artifact", new_callable=AsyncMock),
+        patch("app.director.graph.update_project_status", new_callable=AsyncMock),
     ):
         result_state = await schedule_node(state)
 
@@ -268,12 +273,19 @@ async def test_schedule_node_pauses_at_unapproved_gate() -> None:
     with (
         patch.object(ContentAgent, "run", new_callable=AsyncMock) as mock_run,
         patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock),
+        patch("app.director.graph.update_project_status", new_callable=AsyncMock) as mock_status,
     ):
         result_state = await schedule_node(state)
 
     assert result_state["pending_gate_key"] == "outline_review"
     assert script.status == NodeStatus.QUEUED
     mock_run.assert_not_awaited()
+    # Regression test for a real bug found via live testing: interrupt_before
+    # pauses graph *execution*, but nothing was persisting this to the DB --
+    # GatePanel checks project.status == "awaiting_gate", so the project row
+    # was stuck showing "running" forever with no visible sign a gate was
+    # actually blocking anything.
+    mock_status.assert_awaited_once_with(project_id, ProjectStatus.AWAITING_GATE)
 
 
 @pytest.mark.asyncio
@@ -306,6 +318,7 @@ async def test_schedule_node_gated_node_does_not_starve_unrelated_ready_work() -
         patch.object(DesignAgent, "run", new_callable=AsyncMock, return_value=result) as mock_design_run,
         patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock),
         patch("app.director.graph.artifacts_service.upsert_artifact", new_callable=AsyncMock),
+        patch("app.director.graph.update_project_status", new_callable=AsyncMock) as mock_status,
     ):
         result_state = await schedule_node(state)
 
@@ -314,6 +327,9 @@ async def test_schedule_node_gated_node_does_not_starve_unrelated_ready_work() -
     assert result_state["pending_gate_key"] == "outline_review"
     mock_design_run.assert_awaited_once()
     mock_content_run.assert_not_awaited()
+    # A pending gate wins even though unrelated ungated work also dispatched
+    # this same tick -- "something needs your approval" beats "running".
+    mock_status.assert_awaited_once_with(project_id, ProjectStatus.AWAITING_GATE)
 
 
 @pytest.mark.asyncio
@@ -334,12 +350,17 @@ async def test_schedule_node_proceeds_once_gate_is_approved() -> None:
         patch.object(ContentAgent, "run", new_callable=AsyncMock, return_value=result) as mock_run,
         patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock),
         patch("app.director.graph.artifacts_service.upsert_artifact", new_callable=AsyncMock),
+        patch("app.director.graph.update_project_status", new_callable=AsyncMock) as mock_status,
     ):
         result_state = await schedule_node(state)
 
     assert script.status == NodeStatus.SUCCEEDED
     assert result_state["pending_gate_key"] is None
     mock_run.assert_awaited_once()
+    # Once resumed past an approved gate, the project row must flip back off
+    # "awaiting_gate" -- otherwise it stays stuck showing a pending gate even
+    # though real work is dispatching again.
+    mock_status.assert_awaited_once_with(project_id, ProjectStatus.RUNNING)
 
 
 @pytest.mark.asyncio
@@ -365,6 +386,7 @@ async def test_schedule_node_handles_agent_exception_without_crashing() -> None:
         patch.object(ResearchAgent, "run", new_callable=AsyncMock, side_effect=RuntimeError("boom")),
         patch("app.director.graph.task_nodes_service.update_task_node", new_callable=AsyncMock) as mock_update,
         patch("app.director.graph.artifacts_service.upsert_artifact", new_callable=AsyncMock) as mock_upsert,
+        patch("app.director.graph.update_project_status", new_callable=AsyncMock),
     ):
         await schedule_node(state)  # must not raise
 

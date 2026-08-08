@@ -7,6 +7,42 @@ import type {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
+class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...init?.headers,
+    },
+  });
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = typeof body?.detail === "string" ? body.detail : JSON.stringify(body);
+    } catch {
+      // response wasn't JSON -- fall back to statusText
+    }
+    throw new ApiError(res.status, detail || `request to ${path} failed`);
+  }
+
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  return (await res.json()) as T;
+}
+
 export interface CreateProjectRequest {
   title: string;
   idea: string;
@@ -21,18 +57,18 @@ export interface CreateProjectResponse {
 export async function createProject(
   req: CreateProjectRequest
 ): Promise<CreateProjectResponse> {
-  // TODO: POST `${API_URL}/projects`, body: req, expect 202.
-  throw new Error("not implemented");
+  return request<CreateProjectResponse>("/projects", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }
 
 export async function getProject(projectId: string): Promise<ProjectDetail> {
-  // TODO: GET `${API_URL}/projects/${projectId}`.
-  throw new Error("not implemented");
+  return request<ProjectDetail>(`/projects/${projectId}`);
 }
 
 export async function getArtifact(artifactId: string): Promise<Artifact> {
-  // TODO: GET `${API_URL}/artifacts/${artifactId}`.
-  throw new Error("not implemented");
+  return request<Artifact>(`/artifacts/${artifactId}`);
 }
 
 export interface PatchArtifactRequest {
@@ -49,8 +85,10 @@ export async function patchArtifact(
   artifactId: string,
   req: PatchArtifactRequest
 ): Promise<PatchArtifactResponse> {
-  // TODO: PATCH `${API_URL}/artifacts/${artifactId}`, body: req.
-  throw new Error("not implemented");
+  return request<PatchArtifactResponse>(`/artifacts/${artifactId}`, {
+    method: "PATCH",
+    body: JSON.stringify(req),
+  });
 }
 
 export interface RegenerateArtifactResponse {
@@ -61,15 +99,15 @@ export interface RegenerateArtifactResponse {
 export async function regenerateArtifact(
   artifactId: string
 ): Promise<RegenerateArtifactResponse> {
-  // TODO: POST `${API_URL}/artifacts/${artifactId}/regenerate`.
-  throw new Error("not implemented");
+  return request<RegenerateArtifactResponse>(`/artifacts/${artifactId}/regenerate`, {
+    method: "POST",
+  });
 }
 
 export async function getArtifactVersions(
   artifactId: string
 ): Promise<{ versions: ArtifactVersionSummary[] }> {
-  // TODO: GET `${API_URL}/artifacts/${artifactId}/versions`.
-  throw new Error("not implemented");
+  return request<{ versions: ArtifactVersionSummary[] }>(`/artifacts/${artifactId}/versions`);
 }
 
 export interface ApproveGateResponse {
@@ -81,13 +119,15 @@ export async function approveGate(
   projectId: string,
   gateKey: string
 ): Promise<ApproveGateResponse> {
-  // TODO: POST `${API_URL}/projects/${projectId}/gates/${gateKey}/approve`.
-  throw new Error("not implemented");
+  return request<ApproveGateResponse>(`/projects/${projectId}/gates/${gateKey}/approve`, {
+    method: "POST",
+  });
 }
 
 export async function exportProject(
   projectId: string
 ): Promise<{ projectId: string; bundle: Record<string, unknown> }> {
-  // TODO: GET `${API_URL}/projects/${projectId}/export`.
-  throw new Error("not implemented");
+  return request<{ projectId: string; bundle: Record<string, unknown> }>(
+    `/projects/${projectId}/export`
+  );
 }

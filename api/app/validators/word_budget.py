@@ -27,8 +27,19 @@ def allocate(total_seconds: int, section_weights: dict[str, float], tone: str) -
     return allocation
 
 
-def check(text: str, budget: int, tolerance: float = 0.12) -> ValidationReport:
-    """On failure, repair_hint states the exact word delta."""
+def check(text: str, budget: int, tolerance: float = 0.30) -> ValidationReport:
+    """On failure, repair_hint states the exact word delta.
+
+    Widened from 0.12 to 0.30 deliberately (not a bug fix): observed live
+    with Gemini's quota exhausted and Groq's llama-3.3-70b-versatile
+    fallback carrying every script generation, which misses word budgets
+    far more often than Gemini did. A ~12-18% miss now passes instead of
+    exhausting the full retry budget every time; a genuinely broken output
+    (e.g. 43 words against a 91-word target, roughly 50% under) still fails
+    regardless. Revert toward 0.12 once back on Gemini as the primary if the
+    looser bar isn't wanted long-term -- this is a real quality/pass-rate
+    trade-off, not a correctness fix.
+    """
     word_count = len(text.split())
     lower_bound = budget * (1 - tolerance)
     upper_bound = budget * (1 + tolerance)

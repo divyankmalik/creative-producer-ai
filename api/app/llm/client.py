@@ -26,12 +26,26 @@ async def complete(
     temperature: float = 0.7,
     max_tokens: int | None = None,
 ) -> str:
-    """Call `provider`. If GEMINI is requested and fails, fall back to Groq once."""
+    """Call `provider`. If GEMINI is requested and fails, fall back to Groq once.
+
+    Both failures are folded into one message if the fallback also fails --
+    a bare `except Exception: return await _complete_groq(...)` used to
+    discard the original Gemini error entirely, so a real cause (e.g. quota
+    exhaustion) surfaced everywhere downstream (task_nodes.last_error, the
+    UI) as nothing but Groq's own generic "Connection error.", which is what
+    it raises for something as unrelated as a missing/empty GROQ_API_KEY.
+    """
     if provider == LLMProvider.GEMINI:
         try:
             return await _complete_gemini(prompt, temperature=temperature, max_tokens=max_tokens)
-        except Exception:
-            return await _complete_groq(prompt, temperature=temperature, max_tokens=max_tokens)
+        except Exception as gemini_exc:
+            print(f"[llm] gemini failed, falling back to groq: {gemini_exc!r}")
+            try:
+                return await _complete_groq(prompt, temperature=temperature, max_tokens=max_tokens)
+            except Exception as groq_exc:
+                raise RuntimeError(
+                    f"gemini failed ({gemini_exc!r}); groq fallback also failed ({groq_exc!r})"
+                ) from groq_exc
     return await _complete_groq(prompt, temperature=temperature, max_tokens=max_tokens)
 
 

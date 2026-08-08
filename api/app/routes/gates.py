@@ -9,7 +9,9 @@ from pydantic import Field
 
 from app.director import template
 from app.director.graph import build_graph
-from app.models import CamelModel
+from app.models import CamelModel, ProjectStatus
+from app.services import projects as projects_service
+from app.services.projects import claim_gate_resume
 from app.services.task_nodes import list_task_nodes
 
 router = APIRouter(prefix="/projects", tags=["gates"])
@@ -47,7 +49,22 @@ async def _resume_after_gate(project_id: UUID, gate_key: str) -> None:
             await graph.aupdate_state(config, {"approved_gates": approved}, as_node="schedule")
             await graph.ainvoke(None, config=config)
     except Exception as exc:
+        # Real failure mode, found via live testing: a transient error outside
+        # agent execution (e.g. the checkpointer's own DB write hitting a
+        # Windows asyncio socket flake -- WinError 10035 -- which isn't
+        # caught by schedule_node's own asyncio.gather(return_exceptions=True),
+        # since that only wraps agent calls) can kill ainvoke() entirely,
+        # mid-tick. Without this, the project silently stays "running"
+        # forever -- any node that was mid-dispatch at that instant is
+        # permanently stuck "running" with nothing left to ever finish it,
+        # and finalize_node never gets a chance to mark a real terminal
+        # status. Mirrors _run_director's crash handling (routes/projects.py)
+        # so this failure mode is at least always visible, not silent.
         print(f"[director] resuming project {project_id} past gate {gate_key!r} crashed: {exc!r}")
+        try:
+            await projects_service.update_project_status(project_id, ProjectStatus.FAILED)
+        except Exception:
+            pass
 
 
 @router.post("/{project_id}/gates/{gate_key}/approve", response_model=ApproveGateResponse)
@@ -66,6 +83,15 @@ async def approve_gate(
     nodes = await list_task_nodes(project_id)
     resumed_node_keys = [node.node_key for node in nodes if node.node_key.startswith(gate.blocks_node_key_prefix)]
 
-    background_tasks.add_task(_resume_after_gate, project_id, gate_key)
+    # Only the request that actually wins this atomic claim resumes the
+    # graph -- a double click, a network retry, or two tabs approving the
+    # same gate concurrently would otherwise resume the same LangGraph
+    # thread twice, racing two overlapping executions of the DAG against
+    # each other (see claim_gate_resume's docstring; this is a real bug
+    # found via live testing, not a defensive hypothetical). Still returns
+    # ok=True either way -- the gate genuinely is approved, whether this
+    # request or a concurrent one is the one driving the resume.
+    if await claim_gate_resume(project_id):
+        background_tasks.add_task(_resume_after_gate, project_id, gate_key)
 
     return ApproveGateResponse(ok=True, resumed_node_keys=resumed_node_keys)

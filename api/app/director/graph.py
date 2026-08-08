@@ -115,6 +115,19 @@ async def schedule_node(state: DirectorState) -> DirectorState:
         dispatchable.append(node)
     dispatchable = dispatchable[: state["max_parallel"]]
 
+    # Persist the status this tick actually produced -- interrupt_before
+    # only pauses graph *execution*, it never touches the DB, so without
+    # this the project row stays wherever it last was (stuck on RUNNING
+    # forever once a gate is hit; GatePanel checks project.status ==
+    # "awaiting_gate", so it never has anything to show). Checked in this
+    # order so a pending gate wins even if other ungated work also got
+    # dispatched this same tick -- "something needs your approval" is the
+    # more useful signal than "other things are still running".
+    if state["pending_gate_key"] is not None:
+        await update_project_status(state["project_id"], ProjectStatus.AWAITING_GATE)
+    elif dispatchable:
+        await update_project_status(state["project_id"], ProjectStatus.RUNNING)
+
     if not dispatchable:
         state["done"] = _all_terminal(nodes)
         return state
