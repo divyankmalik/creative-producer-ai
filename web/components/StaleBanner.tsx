@@ -1,3 +1,6 @@
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
+
 interface StaleBannerProps {
   staleReason: string | null;
   onRegenerate?: () => void;
@@ -8,17 +11,16 @@ export function StaleBanner({ staleReason, onRegenerate, regenerating }: StaleBa
   if (!staleReason) return null;
 
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-yellow-500/50 bg-yellow-500/10 p-2 text-sm">
-      <span className="text-yellow-800">{staleReason}</span>
+    <div className="flex items-center justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
+      <span className="flex items-center gap-2 text-amber-200">
+        <AlertTriangle className="h-4 w-4 shrink-0" />
+        {staleReason}
+      </span>
       {onRegenerate && (
-        <button
-          type="button"
-          onClick={onRegenerate}
-          disabled={regenerating}
-          className="shrink-0 rounded-md border border-yellow-600/40 bg-white px-2 py-1 text-xs font-medium text-yellow-800 hover:bg-yellow-50 disabled:opacity-50"
-        >
+        <Button type="button" onClick={onRegenerate} disabled={regenerating} size="sm" variant="outline">
+          {regenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
           {regenerating ? "Regenerating…" : "Regenerate"}
-        </button>
+        </Button>
       )}
     </div>
   );

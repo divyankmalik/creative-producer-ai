@@ -48,6 +48,16 @@ class ThumbnailConcept(BaseModel):
     overlay_text: str
     text_color_hex: str = Field(pattern=_HEX_PATTERN)
     background_color_hex: str = Field(pattern=_HEX_PATTERN)
+    # A ready-to-paste prompt for an external image generator (Gemini, DALL-E,
+    # Midjourney, ...) -- this project doesn't call an image-generation model
+    # itself, so `visual` alone (a short compositional description) isn't
+    # something a user can hand to one directly: it's missing the style/mood/
+    # palette context that lives on the *visual language* artifact, not on
+    # this concept. Explicitly asks the image generator to render overlay_text
+    # into the image itself (in text_color_hex, over background_color_hex) --
+    # per-user request, since modern image models (Gemini/Imagen included)
+    # handle short bold text reasonably well.
+    image_prompt: str = Field(min_length=10)
 
 
 class ThumbnailSet(BaseModel):
@@ -92,6 +102,17 @@ fewer), a text_color_hex for the overlay text, and a background_color_hex
 for what sits directly behind it. Colors should be drawn from or consistent
 with the palette above, and the text/background pair must be high-contrast
 and readable at a glance.
+
+Each concept also needs an image_prompt: a complete, self-contained prompt a
+person could paste directly into an image generator (Gemini, DALL-E,
+Midjourney, ...) to produce the finished thumbnail for this concept in one
+shot. Fold in the composition from `visual`, the mood, typography feel, and
+imagery style above, plus the palette colors by name/hex. Specify a 16:9
+thumbnail composition, and explicitly instruct the generator to render the
+overlay_text directly into the image as bold, large, highly legible text in
+text_color_hex, positioned over a background_color_hex area with strong
+contrast against the rest of the scene -- describe the text placement (e.g.
+lower third, or centered) so it doesn't collide with the main subject.
 """
 
 

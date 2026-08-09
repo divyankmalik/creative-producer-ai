@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.base import AgentContext, BaseAgent
 from app.llm.client import GEMINI_MODEL
+from app.llm.search import SearchResult
 from app.llm.search import search as tavily_search
 from app.llm.structured import generate_structured
 from app.models import AgentResult, TaskEnvelope, ValidationReport
@@ -36,13 +37,17 @@ Idea: {idea}
 Target audience: {audience}
 Tone: {tone}
 
-Here is what web search turned up on this topic:
+Here are your sources -- if one is labeled "Product/feature details you
+provided", that's not from the web, it's what you were told directly about
+this specific product/feature, and is the authoritative source for anything
+specific to it:
 {sources_block}
 
 Produce a research brief: a distinct angle for this content, one sentence of
 audience insight, 3-8 key points a script could be built from, and the sources
 that support them. Every key point must be traceable to one of the sources above
-— do not invent facts that aren't in the sources.
+— do not invent facts that aren't in the sources. Prefer the "Product/feature
+details you provided" source (when present) for any product-specific claims.
 """
 
 
@@ -53,7 +58,29 @@ class ResearchAgent(BaseAgent):
 
     async def build_context(self, env: TaskEnvelope) -> AgentContext:
         project = await get_project(env.project_id)
-        sources = await tavily_search(project.idea, max_results=5)
+
+        # Lets a user ground content in facts a web search can't find --
+        # e.g. an unreleased or internal feature. check_grounding (called in
+        # validate()) only does keyword-overlap matching against whatever's
+        # in `sources`, so without this there was no way for the user's own
+        # facts to ever count as a legitimate source: the LLM is explicitly
+        # told not to invent facts absent from the sources, so it either had
+        # to stay vague or violate that instruction to say anything specific
+        # about a proprietary feature at all.
+        #
+        # Skips the web search entirely in this case, not just adds to it --
+        # live-tested with a real product name ("Smart Filters") that
+        # coincidentally collided with an unrelated real product; the web
+        # search result got blended into the brief alongside the real
+        # reference material, mixing in a competitor's actual claims. If the
+        # user is telling us the facts directly, a web search on the same
+        # idea text is more likely to introduce noise like that than to add
+        # anything useful.
+        reference_material = project.params.get("reference_material")
+        if reference_material:
+            sources = [SearchResult(title="Product/feature details you provided", url="user-provided", content=reference_material)]
+        else:
+            sources = await tavily_search(project.idea, max_results=5)
 
         ctx = AgentContext(envelope=env)
         ctx.input_artifacts["project"] = project

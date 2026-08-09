@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Check, Copy, Loader2, Plus, RefreshCw, Save, X } from "lucide-react";
 import type { Artifact } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Input, Textarea } from "@/components/ui/input";
 
 interface ArtifactEditorProps {
   artifact: Artifact;
@@ -87,13 +91,14 @@ function FieldEditor({ label, value, path, onChange, onRemove }: FieldEditorProp
 
   if (typeof value === "boolean") {
     return (
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex items-center gap-2 text-sm text-slate-300">
         <input
           type="checkbox"
           checked={value}
           onChange={(e) => onChange(path, e.target.checked)}
+          className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-slate-950"
         />
-        {label && <span className="text-slate-700">{prettyLabel(label)}</span>}
+        {label && <span>{prettyLabel(label)}</span>}
       </label>
     );
   }
@@ -101,13 +106,7 @@ function FieldEditor({ label, value, path, onChange, onRemove }: FieldEditorProp
   if (typeof value === "number") {
     return (
       <FieldShell label={label} onRemove={onRemove}>
-        <input
-          type="number"
-          id={fieldId}
-          value={value}
-          onChange={(e) => onChange(path, e.target.valueAsNumber)}
-          className="w-full rounded-md border px-2 py-1 text-sm"
-        />
+        <Input type="number" id={fieldId} value={value} onChange={(e) => onChange(path, e.target.valueAsNumber)} />
       </FieldShell>
     );
   }
@@ -117,10 +116,10 @@ function FieldEditor({ label, value, path, onChange, onRemove }: FieldEditorProp
     return (
       <FieldShell label={label} onRemove={onRemove}>
         <div className="flex flex-col gap-2">
-          {value.length === 0 && <p className="text-xs italic text-slate-400">Empty list</p>}
+          {value.length === 0 && <p className="text-xs italic text-slate-500">Empty list</p>}
           {value.map((item, i) =>
             itemsAreObjects ? (
-              <div key={i} className="rounded-md border border-slate-200 p-2">
+              <div key={i} className="rounded-md border border-slate-800 bg-slate-900/50 p-2.5">
                 <FieldEditor
                   label={null}
                   value={item}
@@ -137,10 +136,10 @@ function FieldEditor({ label, value, path, onChange, onRemove }: FieldEditorProp
                 <button
                   type="button"
                   onClick={() => onChange(path, removeAt(value, [i]) as JsonValue[])}
-                  className="shrink-0 text-xs text-red-500 hover:text-red-700"
+                  className="shrink-0 text-slate-500 hover:text-red-400"
                   aria-label="Remove item"
                 >
-                  ✕
+                  <X className="h-3.5 w-3.5" />
                 </button>
               </div>
             )
@@ -148,9 +147,10 @@ function FieldEditor({ label, value, path, onChange, onRemove }: FieldEditorProp
           <button
             type="button"
             onClick={() => onChange(path, [...value, defaultForSibling(value[value.length - 1])])}
-            className="self-start text-xs font-medium text-sky-600 hover:text-sky-800"
+            className="inline-flex items-center gap-1 self-start text-xs font-medium text-blue-400 hover:text-blue-300"
           >
-            + Add item
+            <Plus className="h-3 w-3" />
+            Add item
           </button>
         </div>
       </FieldShell>
@@ -161,7 +161,7 @@ function FieldEditor({ label, value, path, onChange, onRemove }: FieldEditorProp
     const entries = Object.entries(value);
     return (
       <FieldShell label={label} onRemove={onRemove}>
-        <div className="flex flex-col gap-3 border-l-2 border-slate-100 pl-3">
+        <div className="flex flex-col gap-3 border-l-2 border-slate-800 pl-3">
           {entries.map(([key, val]) => (
             <FieldEditor
               key={key}
@@ -183,23 +183,42 @@ function FieldEditor({ label, value, path, onChange, onRemove }: FieldEditorProp
   return (
     <FieldShell label={label} onRemove={onRemove}>
       {isLong ? (
-        <textarea
-          id={fieldId}
-          value={stringValue}
-          onChange={(e) => onChange(path, e.target.value)}
-          rows={Math.min(10, Math.max(3, Math.ceil(stringValue.length / 60)))}
-          className="w-full rounded-md border px-2 py-1 text-sm"
-        />
+        <div className="relative">
+          <Textarea
+            id={fieldId}
+            value={stringValue}
+            onChange={(e) => onChange(path, e.target.value)}
+            rows={Math.min(10, Math.max(3, Math.ceil(stringValue.length / 60)))}
+            className="pr-9"
+          />
+          <CopyIconButton text={stringValue} />
+        </div>
       ) : (
-        <input
-          type="text"
-          id={fieldId}
-          value={stringValue}
-          onChange={(e) => onChange(path, e.target.value)}
-          className="w-full rounded-md border px-2 py-1 text-sm"
-        />
+        <Input type="text" id={fieldId} value={stringValue} onChange={(e) => onChange(path, e.target.value)} />
       )}
     </FieldShell>
+  );
+}
+
+function CopyIconButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="absolute right-2 top-2 rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+      aria-label="Copy to clipboard"
+    >
+      {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+    </button>
   );
 }
 
@@ -214,7 +233,7 @@ function FieldShell({
 }) {
   if (label === null) return <>{children}</>;
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between">
         <label htmlFor={label} className="text-xs font-medium uppercase tracking-wide text-slate-500">
           {prettyLabel(label)}
@@ -223,10 +242,10 @@ function FieldShell({
           <button
             type="button"
             onClick={onRemove}
-            className="text-xs text-red-500 hover:text-red-700"
+            className="text-slate-500 hover:text-red-400"
             aria-label="Remove item"
           >
-            ✕
+            <X className="h-3.5 w-3.5" />
           </button>
         )}
       </div>
@@ -259,27 +278,23 @@ export function ArtifactEditor({
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <div className="flex items-center justify-between text-xs text-slate-500">
+      <div className="flex items-center justify-between gap-2 font-mono text-xs text-slate-500">
         <span>
           v{artifact.currentVersion}
           {artifact.model ? ` · ${artifact.model}` : ""}
           {artifact.editedBy ? ` · edited by ${artifact.editedBy}` : ""}
         </span>
         {onRegenerate && (
-          <button
-            type="button"
-            onClick={onRegenerate}
-            disabled={regenerating}
-            className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-slate-50 disabled:opacity-50"
-          >
+          <Button type="button" onClick={onRegenerate} disabled={regenerating} size="sm" variant="outline">
+            {regenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             {regenerating ? "Regenerating…" : "Regenerate from scratch"}
-          </button>
+          </Button>
         )}
       </div>
 
       <div className="flex flex-col gap-4 overflow-y-auto">
         {entries.length === 0 ? (
-          <p className="text-sm text-slate-400">This artifact has no editable fields.</p>
+          <p className="text-sm text-slate-500">This artifact has no editable fields.</p>
         ) : (
           entries.map(([key, value]) => (
             <FieldEditor key={key} label={key} value={value} path={[key]} onChange={handleChange} />
@@ -288,14 +303,15 @@ export function ArtifactEditor({
       </div>
 
       {onSave && (
-        <button
+        <Button
           type="button"
           onClick={() => onSave(draft as Record<string, unknown>)}
           disabled={saving}
-          className="self-start rounded-md bg-slate-900 px-4 py-1.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+          className={cn("self-start")}
         >
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           {saving ? "Saving…" : "Save changes"}
-        </button>
+        </Button>
       )}
     </div>
   );

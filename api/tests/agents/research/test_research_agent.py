@@ -107,6 +107,66 @@ async def test_successful_run_returns_agent_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reference_material_grounds_product_specific_claims() -> None:
+    """Regression test for a real gap: check_grounding only ever matched
+    claims against Tavily's web search results, so there was no way to
+    write about a proprietary/unreleased feature a web search can't find --
+    the LLM is explicitly told not to invent facts absent from the sources,
+    so it had no legitimate way to say anything specific about it. A key
+    point traceable ONLY to project.params["reference_material"] (nothing
+    in the mocked web search shares its vocabulary) must still pass
+    grounding once that param is set.
+    """
+    envelope = make_envelope()
+    project = make_project()
+    project = project.model_copy(
+        update={
+            "params": {
+                **project.params,
+                "reference_material": "Smart Filters lets users save filter presets combining tags, "
+                "dates, and assignees to instantly narrow down large task lists.",
+            }
+        }
+    )
+    brief_grounded_in_reference_material = ResearchBrief(
+        angle="Smart Filters turns manual scrolling into one click.",
+        audience_insight="Users with large task lists want instant results, not more scrolling.",
+        key_points=[
+            "Smart Filters lets users save filter presets combining tags, dates, and assignees.",
+            "Saved presets instantly narrow down large task lists without manual scrolling.",
+            "Teams still need a consistent schedule to keep their workflow useful.",
+        ],
+        sources=[
+            Source(
+                title="Product/feature details you provided",
+                url="user-provided",
+                excerpt="Smart Filters lets users save filter presets combining tags, dates, and assignees "
+                "to instantly narrow down large task lists without manual scrolling workflow.",
+            )
+        ],
+    )
+
+    with (
+        patch("app.agents.research.get_project", new_callable=AsyncMock, return_value=project),
+        patch("app.agents.research.tavily_search", new_callable=AsyncMock, return_value=make_sources()),
+        patch(
+            "app.agents.research.generate_structured",
+            new_callable=AsyncMock,
+            return_value=brief_grounded_in_reference_material,
+        ) as mock_generate,
+    ):
+        result = await ResearchAgent().run(envelope)
+
+    assert result.ok is True
+    assert mock_generate.await_count == 1
+    # The prompt actually sent to the LLM must have carried the reference
+    # material through, not just the web search results.
+    prompt_sent = mock_generate.await_args.args[0]
+    assert "Smart Filters" in prompt_sent
+    assert "Product/feature details you provided" in prompt_sent
+
+
+@pytest.mark.asyncio
 async def test_ungrounded_draft_triggers_repair_retry() -> None:
     envelope = make_envelope()
 

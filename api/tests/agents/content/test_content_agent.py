@@ -38,7 +38,15 @@ def make_project() -> Project:
         title="Async Standups",
         idea="Why fully-async daily standups quietly kill remote team morale.",
         status=ProjectStatus.PLANNING,
-        params={"audience": "engineering managers", "tone": "conversational", "total_seconds": 180},
+        # section_count: 2 matches make_outline()/make_bad_key_outline()'s
+        # section count -- must agree, since ContentAgent._validate_outline
+        # now enforces len(outline.sections) == project.params["section_count"].
+        params={
+            "audience": "engineering managers",
+            "tone": "conversational",
+            "total_seconds": 180,
+            "section_count": 2,
+        },
         created_at=NOW,
         updated_at=NOW,
     )
@@ -127,12 +135,16 @@ def make_scripts() -> list[Script]:
 
 
 def make_storyboard(cover_all: bool = True) -> Storyboard:
+    # duration_s=3 for each -- must land within ±35% of narration_seconds(8,
+    # "conversational")==3 (make_scripts()'s texts are both 8 words), since
+    # ContentAgent._validate_storyboard now checks shot durations against
+    # actual narration length, not just section coverage.
     shots = [
-        StoryboardShot(section_key="s1", visual="laptops with chat windows open", overlay_text="Async", duration_s=5),
+        StoryboardShot(section_key="s1", visual="laptops with chat windows open", overlay_text="Async", duration_s=3),
     ]
     if cover_all:
         shots.append(
-            StoryboardShot(section_key="s2", visual="empty calendar, no meetings", overlay_text=None, duration_s=4)
+            StoryboardShot(section_key="s2", visual="empty calendar, no meetings", overlay_text=None, duration_s=3)
         )
     return Storyboard(shots=shots)
 
@@ -187,6 +199,50 @@ async def test_outline_bad_key_order_triggers_repair() -> None:
     assert mock_gen.await_args_list[0].kwargs["repair_hint"] is None
     second_hint = mock_gen.await_args_list[1].kwargs["repair_hint"]
     assert second_hint is not None and "s1" in second_hint
+
+
+@pytest.mark.asyncio
+async def test_outline_wrong_section_count_triggers_repair() -> None:
+    """Regression test for a real bug found via live testing: the outline
+    prompt never told the model how many sections to produce, and nothing
+    validated the count it chose against project.params["section_count"].
+    director/template.py's expand_template always creates exactly
+    section_count content.script.sN nodes -- an outline with more sections
+    than that orphans the extras (never scripted/storyboarded) and dilutes
+    every real section's word budget, since word_budget.allocate's weight
+    pool is built from ALL outline sections. A real live run asked for 3
+    sections and got 5, producing a video roughly a quarter of the
+    requested length.
+    """
+    envelope = make_envelope("outline")
+    brief_artifact = make_artifact(
+        envelope.project_id, "research.brief", "research_brief", "research-brief", make_brief_payload()
+    )
+    # project.params["section_count"] is 2 (make_project()); this outline has 3.
+    three_sections = Outline(
+        title="Too Many Sections",
+        sections=[
+            OutlineSection(key="s1", title="Hook", summary="Async standups cut timezone conflicts.", weight=1.0),
+            OutlineSection(key="s2", title="Body", summary="They reduce meeting fatigue for teams.", weight=1.0),
+            OutlineSection(key="s3", title="Extra", summary="An orphaned third section.", weight=1.0),
+        ],
+    )
+
+    with (
+        patch("app.agents.content.get_project", new_callable=AsyncMock, return_value=make_project()),
+        patch("app.agents.content.get_artifact_by_slug", new_callable=AsyncMock, return_value=brief_artifact),
+        patch(
+            "app.agents.content.generate_structured",
+            new_callable=AsyncMock,
+            side_effect=[three_sections, make_outline()],
+        ) as mock_gen,
+    ):
+        result = await ContentAgent().run(envelope)
+
+    assert result.ok is True
+    assert mock_gen.await_count == 2
+    second_hint = mock_gen.await_args_list[1].kwargs["repair_hint"]
+    assert second_hint is not None and "exactly 2 sections" in second_hint and "got 3" in second_hint
 
 
 @pytest.mark.asyncio
@@ -383,6 +439,67 @@ async def test_storyboard_missing_coverage_triggers_repair() -> None:
     assert mock_gen.await_count == 2
     second_hint = mock_gen.await_args_list[1].kwargs["repair_hint"]
     assert second_hint is not None and "s2" in second_hint
+
+
+@pytest.mark.asyncio
+async def test_storyboard_undertimed_shots_triggers_repair() -> None:
+    """Regression test for a real bug found via live testing: covering every
+    section with at least one shot (the only thing previously validated)
+    doesn't stop shot durations from being wildly disconnected from how
+    long the section's script actually takes to read aloud. A live run
+    generated a 573-word section (~229s of narration) with shots totaling
+    just 44s -- a real finished video came out roughly a fifth of its
+    intended length despite the script itself being correctly sized.
+    """
+    envelope = make_envelope("storyboard", input_artifact_slugs=["content-script-s1", "content-script-s2"])
+    # ~200 words each -> narration_seconds(200, "conversational") == 80s
+    long_scripts = [
+        Script(section_key="s1", text=" ".join(["word"] * 200)),
+        Script(section_key="s2", text=" ".join(["word"] * 200)),
+    ]
+    artifacts_by_slug = {
+        "content-script-s1": make_artifact(
+            envelope.project_id, "content.script.s1", "content_script", "content-script-s1", long_scripts[0].model_dump()
+        ),
+        "content-script-s2": make_artifact(
+            envelope.project_id, "content.script.s2", "content_script", "content-script-s2", long_scripts[1].model_dump()
+        ),
+    }
+    # Covers both sections (passes the old check) but with only ~8s of
+    # shots against an ~80s narration target -- must still fail.
+    undertimed = Storyboard(
+        shots=[
+            StoryboardShot(section_key="s1", visual="a", overlay_text=None, duration_s=4),
+            StoryboardShot(section_key="s2", visual="b", overlay_text=None, duration_s=4),
+        ]
+    )
+    well_timed = Storyboard(
+        shots=[
+            StoryboardShot(section_key="s1", visual="a", overlay_text=None, duration_s=80),
+            StoryboardShot(section_key="s2", visual="b", overlay_text=None, duration_s=80),
+        ]
+    )
+
+    with (
+        patch("app.agents.content.get_project", new_callable=AsyncMock, return_value=make_project()),
+        patch(
+            "app.agents.content.get_artifact_by_slug",
+            new_callable=AsyncMock,
+            side_effect=_artifact_lookup_side_effect(artifacts_by_slug),
+        ),
+        patch(
+            "app.agents.content.generate_structured",
+            new_callable=AsyncMock,
+            side_effect=[undertimed, well_timed],
+        ) as mock_gen,
+    ):
+        result = await ContentAgent().run(envelope)
+
+    assert result.ok is True
+    assert mock_gen.await_count == 2
+    second_hint = mock_gen.await_args_list[1].kwargs["repair_hint"]
+    assert second_hint is not None
+    assert "s1" in second_hint and "s2" in second_hint
 
 
 @pytest.mark.asyncio

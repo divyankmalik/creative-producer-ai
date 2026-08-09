@@ -63,8 +63,6 @@ AGENT_REGISTRY: dict[str, type[BaseAgent]] = {
 _TERMINAL_STATUSES = (NodeStatus.SUCCEEDED, NodeStatus.FAILED, NodeStatus.BLOCKED, NodeStatus.SKIPPED)
 _FAILED_PROJECT_STATUSES = (NodeStatus.FAILED, NodeStatus.BLOCKED)
 
-DEFAULT_SECTION_COUNT = 3
-
 
 # ---------------------------------------------------------------------------
 # Graph nodes
@@ -73,7 +71,7 @@ DEFAULT_SECTION_COUNT = 3
 
 async def plan_node(state: DirectorState) -> DirectorState:
     project = await get_project(state["project_id"])
-    section_count = project.params.get("section_count", DEFAULT_SECTION_COUNT)
+    section_count = project.params.get("section_count", template.DEFAULT_SECTION_COUNT)
 
     node_templates = template.expand_template(section_count)
     nodes = await task_nodes_service.create_task_nodes(state["project_id"], node_templates)

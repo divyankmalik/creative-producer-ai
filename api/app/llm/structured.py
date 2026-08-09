@@ -14,6 +14,15 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
+# Seen live from Groq's fallback model: it sometimes "emphasizes" a JSON
+# string value with markdown bold, e.g. `"overlay_text": **"Update Your
+# Wiki"**,` -- valid-looking output to a human, invalid JSON syntax (the **
+# markers sit outside the string, not inside it, so this isn't the model
+# adding emphasis to the text content). Cheap to strip before parsing; the
+# repair-hint retry loop in agents/base.py is the fallback for anything this
+# doesn't catch.
+_STRAY_BOLD_STRING_RE = re.compile(r'\*\*(\s*"(?:[^"\\]|\\.)*"\s*)\*\*')
+
 
 async def generate_structured(
     prompt: str,
@@ -46,6 +55,7 @@ def _build_prompt(prompt: str, schema: type[BaseModel], repair_hint: str | None)
 
 def _parse(raw: str, schema: type[ModelT]) -> ModelT:
     text = _FENCE_RE.sub("", raw.strip()).strip()
+    text = _STRAY_BOLD_STRING_RE.sub(r"\1", text)
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:

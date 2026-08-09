@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.models import AgentResult, TaskEnvelope, ValidationReport
 
 
@@ -31,7 +33,29 @@ class BaseAgent(ABC):
 
         last_report: ValidationReport | None = None
         for attempt in range(1, self.max_attempts + 1):
-            generated = await self.generate(ctx)
+            try:
+                generated = await self.generate(ctx)
+            except (ValueError, ValidationError) as exc:
+                # A malformed-JSON or schema-mismatch response from the LLM
+                # (e.g. `**"text"**` -- stray markdown breaking JSON syntax,
+                # seen live from Groq's fallback model) used to propagate
+                # straight out of run() uncaught, skipping this entire
+                # repair-hint loop -- every attempt was then a blind,
+                # uninformed retry instead of one told exactly what broke.
+                # Treated as a validation failure so the *next* attempt's
+                # prompt actually includes a hint about what went wrong.
+                last_report = ValidationReport(
+                    ok=False,
+                    failures=[f"generation produced an unparseable response: {exc}"],
+                    repair_hint=(
+                        f"Your previous response could not be parsed: {exc}. Return ONLY a single valid "
+                        "JSON object -- no markdown formatting (no ** or _ emphasis, no code fences) "
+                        "anywhere, including inside field values."
+                    ),
+                )
+                ctx.repair_hint = last_report.repair_hint
+                continue
+
             report = await self.validate(ctx, generated)
 
             if report.ok:

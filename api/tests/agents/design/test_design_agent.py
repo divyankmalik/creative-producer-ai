@@ -111,6 +111,7 @@ def make_thumbnail_set(*, bad_overlay: bool = False, bad_contrast: bool = False)
         overlay_text="This Will Change Everything Today" if bad_overlay else "Stop Doing This",
         text_color_hex="#777777" if bad_contrast else "#000000",
         background_color_hex="#888888" if bad_contrast else "#FFFFFF",
+        image_prompt="A close-up photo of a desk calendar with every meeting crossed out in red, 16:9, no text.",
     )
     concept_b = ThumbnailConcept(
         concept_name="Concept B",
@@ -118,6 +119,7 @@ def make_thumbnail_set(*, bad_overlay: bool = False, bad_contrast: bool = False)
         overlay_text="No More Meetings",
         text_color_hex="#000000",
         background_color_hex="#FFFFFF",
+        image_prompt="A split-screen photo of remote workers in different timezones, 16:9, no text.",
     )
     return ThumbnailSet(concepts=[concept_a, concept_b])
 

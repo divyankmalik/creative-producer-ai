@@ -12,6 +12,14 @@ from dataclasses import dataclass, field
 
 from app.models import DependencyKind
 
+# Single source of truth for "how many script sections if the project didn't
+# specify" -- both director/graph.py (which actually creates that many
+# content.script.sN nodes) and agents/content.py (which must tell the LLM to
+# produce a matching-length outline) need the same number. Used to live
+# duplicated in graph.py alone, with nothing enforcing the outline's actual
+# section count matched it -- see agents/content.py's outline validation.
+DEFAULT_SECTION_COUNT = 3
+
 
 @dataclass(frozen=True)
 class DependencyTemplate:

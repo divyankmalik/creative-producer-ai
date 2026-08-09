@@ -1,5 +1,7 @@
-import type { NodeStatus, TaskNode } from "@/lib/types";
+import type { TaskNode } from "@/lib/types";
 import { cn, formatNodeLabel } from "@/lib/utils";
+import { agentIconFor, NODE_STATUS_META } from "@/lib/status";
+import { Badge } from "@/components/ui/badge";
 
 interface DagViewProps {
   nodes: TaskNode[];
@@ -7,24 +9,14 @@ interface DagViewProps {
   onSelectNode?: (nodeKey: string) => void;
 }
 
-const STATUS_STYLES: Record<NodeStatus, string> = {
-  queued: "border-slate-300 bg-slate-50 text-slate-600",
-  ready: "border-sky-300 bg-sky-50 text-sky-700",
-  running: "border-sky-400 bg-sky-100 text-sky-800 animate-pulse",
-  succeeded: "border-emerald-300 bg-emerald-50 text-emerald-700",
-  failed: "border-red-400 bg-red-50 text-red-700",
-  blocked: "border-amber-300 bg-amber-50 text-amber-700",
-  skipped: "border-slate-200 bg-slate-50 text-slate-400",
-};
-
-const STATUS_DOT: Record<NodeStatus, string> = {
-  queued: "bg-slate-400",
-  ready: "bg-sky-500",
-  running: "bg-sky-500",
-  succeeded: "bg-emerald-500",
-  failed: "bg-red-500",
-  blocked: "bg-amber-500",
-  skipped: "bg-slate-300",
+const CARD_RING: Record<string, string> = {
+  succeeded: "border-emerald-500/30 hover:border-emerald-500/50",
+  failed: "border-red-500/30 hover:border-red-500/50",
+  running: "border-blue-500/40 hover:border-blue-500/60",
+  blocked: "border-amber-500/30 hover:border-amber-500/50",
+  ready: "border-sky-500/30 hover:border-sky-500/50",
+  queued: "border-slate-700 hover:border-slate-600",
+  skipped: "border-slate-800 hover:border-slate-700",
 };
 
 // Groups nodes into columns by longest-path depth from any root (a node with
@@ -68,8 +60,8 @@ function computeColumns(nodes: TaskNode[]): TaskNode[][] {
 export function DagView({ nodes, selectedNodeKey, onSelectNode }: DagViewProps) {
   if (nodes.length === 0) {
     return (
-      <div className="flex h-full w-full items-center justify-center rounded-md border border-dashed">
-        <p className="text-sm text-slate-400">Waiting for the task graph to plan…</p>
+      <div className="flex h-full w-full items-center justify-center rounded-lg border border-dashed border-slate-800 bg-slate-900/30">
+        <p className="text-sm text-slate-500">Waiting for the task graph to plan…</p>
       </div>
     );
   }
@@ -77,37 +69,47 @@ export function DagView({ nodes, selectedNodeKey, onSelectNode }: DagViewProps) 
   const columns = computeColumns(nodes);
 
   return (
-    <div className="flex h-full w-full gap-4 overflow-x-auto rounded-md border p-4">
+    <div className="flex h-full w-full gap-6 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/30 p-5">
       {columns.map((column, i) => (
-        <div key={i} className="flex min-w-[180px] flex-1 flex-col gap-3">
-          {column.map((node) => (
-            <button
-              key={node.id}
-              type="button"
-              onClick={() => onSelectNode?.(node.nodeKey)}
-              className={cn(
-                "flex flex-col gap-1 rounded-md border px-3 py-2 text-left text-xs shadow-sm transition",
-                STATUS_STYLES[node.status],
-                selectedNodeKey === node.nodeKey && "ring-2 ring-offset-1 ring-slate-500"
-              )}
-              title={node.lastError ?? undefined}
-            >
-              <span className="flex items-center gap-1.5 font-medium capitalize">
-                <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[node.status])} />
-                {formatNodeLabel(node.nodeKey)}
-              </span>
-              <span className="text-[10px] uppercase tracking-wide opacity-70">{node.agent}</span>
-              <span className="text-[10px] opacity-70">
-                {node.status}
-                {node.attempts > 0 ? ` · attempt ${node.attempts}` : ""}
-              </span>
-              {node.dependencies.length > 0 && (
-                <span className="truncate text-[10px] opacity-60">
-                  ← {node.dependencies.map((d) => formatNodeLabel(d.nodeKey)).join(", ")}
-                </span>
-              )}
-            </button>
-          ))}
+        <div key={i} className="flex min-w-[200px] flex-1 flex-col gap-3">
+          {column.map((node) => {
+            const meta = NODE_STATUS_META[node.status];
+            const StatusIcon = meta.icon;
+            const AgentIcon = agentIconFor(node.nodeKey);
+            const selected = selectedNodeKey === node.nodeKey;
+            return (
+              <button
+                key={node.id}
+                type="button"
+                onClick={() => onSelectNode?.(node.nodeKey)}
+                className={cn(
+                  "flex flex-col gap-2 rounded-lg border bg-slate-900/80 px-3.5 py-3 text-left shadow-sm shadow-black/20 transition-all",
+                  CARD_RING[node.status],
+                  selected && "ring-2 ring-blue-500 ring-offset-2 ring-offset-slate-950"
+                )}
+                title={node.lastError ?? undefined}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 text-sm font-medium text-slate-100">
+                    <AgentIcon className="h-3.5 w-3.5 text-slate-500" />
+                    {formatNodeLabel(node.nodeKey)}
+                  </span>
+                  <StatusIcon className={cn("h-3.5 w-3.5 shrink-0", meta.spin && "animate-spin")} />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Badge variant={meta.variant}>{meta.label}</Badge>
+                  {node.attempts > 0 && (
+                    <span className="font-mono text-[10px] text-slate-500">×{node.attempts}</span>
+                  )}
+                </div>
+                {node.dependencies.length > 0 && (
+                  <span className="truncate font-mono text-[10px] text-slate-500">
+                    ← {node.dependencies.map((d) => formatNodeLabel(d.nodeKey)).join(", ")}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       ))}
     </div>

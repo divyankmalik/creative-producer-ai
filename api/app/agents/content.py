@@ -14,14 +14,16 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.agents.base import AgentContext, BaseAgent
+from app.director.template import DEFAULT_SECTION_COUNT
 from app.llm.client import GEMINI_MODEL
 from app.llm.structured import generate_structured
 from app.models import AgentResult, TaskEnvelope, ValidationReport
 from app.services.artifacts import get_artifact_by_slug
 from app.services.projects import get_project
 from app.validators.claims import check_grounding, extract_claims
-from app.validators.word_budget import allocate
+from app.validators.word_budget import allocate, narration_seconds
 from app.validators.word_budget import check as check_word_budget
+from app.validators.word_budget import check_shot_durations
 
 # ---------------------------------------------------------------------------
 # Schemas -- one per artifact this agent produces/consumes.
@@ -79,12 +81,13 @@ Audience insight: {audience_insight}
 Key points:
 {key_points_block}
 
-Break this into a script outline of 2-6 sections with keys "s1", "s2", ... in
-order. The first section functions as the hook (grab attention fast); the
-last section functions as the outro (wrap up / call to action). Each section
-needs a title, a one-to-two sentence summary grounded in the key points
-above, and a `weight` (relative share of runtime -- any positive number, does
-not need to sum to 1).
+Break this into a script outline of EXACTLY {section_count} sections with
+keys "s1", "s2", ... "s{section_count}" in order -- not more, not fewer. The
+first section functions as the hook (grab attention fast); the last section
+functions as the outro (wrap up / call to action). Each section needs a
+title, a one-to-two sentence summary grounded in the key points above, and a
+`weight` (relative share of runtime -- any positive number, does not need to
+sum to 1).
 """
 
 _SCRIPT_PROMPT = """You are writing the spoken script for one section of a video.
@@ -104,12 +107,16 @@ _STORYBOARD_PROMPT = """You are storyboarding a video from its finished script.
 
 Video title: {title}
 
-Script, by section:
+Script, by section -- each labeled with how long it takes to read aloud:
 {script_block}
 
 For each section, produce one or more shots: a visual description, optional
 on-screen overlay text (4 words or fewer), and an estimated duration in
-seconds. Cover every section key listed above at least once.
+seconds. Cover every section key listed above at least once. Critically,
+each section's shots must SUM to approximately that section's stated
+narration time -- do not compress the pacing into a couple of quick shots;
+a longer section needs correspondingly more shots or longer ones, not a
+short summary of it.
 """
 
 
@@ -164,12 +171,15 @@ class ContentAgent(BaseAgent):
         raise ValueError(f"unknown content capability: {capability!r}")
 
     async def _generate_outline(self, ctx: AgentContext) -> Outline:
+        project = ctx.input_artifacts["project"]
         brief = ctx.input_artifacts["brief"]
         key_points_block = "\n".join(f"- {point}" for point in brief.get("key_points", []))
+        section_count = project.params.get("section_count", DEFAULT_SECTION_COUNT)
         prompt = _OUTLINE_PROMPT.format(
             angle=brief.get("angle", ""),
             audience_insight=brief.get("audience_insight", ""),
             key_points_block=key_points_block,
+            section_count=section_count,
         )
         return await generate_structured(prompt, schema=Outline, repair_hint=ctx.repair_hint)
 
@@ -204,7 +214,11 @@ class ContentAgent(BaseAgent):
     async def _generate_storyboard(self, ctx: AgentContext) -> Storyboard:
         project = ctx.input_artifacts["project"]
         scripts: list[Script] = ctx.input_artifacts["scripts"]
-        script_block = "\n\n".join(f"[{script.section_key}]\n{script.text}" for script in scripts)
+        tone = project.params.get("tone", "conversational")
+        script_block = "\n\n".join(
+            f"[{script.section_key}] (~{narration_seconds(len(script.text.split()), tone)}s to read aloud)\n{script.text}"
+            for script in scripts
+        )
         prompt = _STORYBOARD_PROMPT.format(title=project.title, script_block=script_block)
         return await generate_structured(prompt, schema=Storyboard, repair_hint=ctx.repair_hint)
 
@@ -219,6 +233,23 @@ class ContentAgent(BaseAgent):
         raise ValueError(f"unknown content capability: {capability!r}")
 
     def _validate_outline(self, ctx: AgentContext, outline: Outline) -> ValidationReport:
+        # Real bug found via live testing: this only ever checked that keys
+        # were sequential given however many sections the model produced --
+        # nothing checked that count against project.params["section_count"]
+        # at all. The Director's template always creates exactly
+        # section_count content.script.sN nodes (director/template.py's
+        # expand_template), so an outline with more sections than that
+        # orphans the extras (no script/storyboard ever covers them) and,
+        # worse, still counts their `weight` in word_budget.allocate's pool
+        # -- silently shrinking every real section's word budget, and
+        # misdirecting the outro carve-out onto a phantom last section
+        # instead of the true final scripted one.
+        project = ctx.input_artifacts["project"]
+        expected_count = project.params.get("section_count", DEFAULT_SECTION_COUNT)
+        if len(outline.sections) != expected_count:
+            hint = f"Outline must have exactly {expected_count} sections, got {len(outline.sections)}."
+            return ValidationReport(ok=False, failures=[hint], repair_hint=hint)
+
         expected_keys = [f"s{i}" for i in range(1, len(outline.sections) + 1)]
         actual_keys = [section.key for section in outline.sections]
         if actual_keys != expected_keys:
@@ -239,15 +270,30 @@ class ContentAgent(BaseAgent):
         expected_keys = {script.section_key for script in scripts}
         covered_keys = {shot.section_key for shot in storyboard.shots}
         missing = sorted(expected_keys - covered_keys)
-        if not missing:
-            return ValidationReport(ok=True)
+        if missing:
+            hint = f"Add at least one shot for each of these sections: {', '.join(missing)}."
+            return ValidationReport(
+                ok=False,
+                failures=[f"no shot covers section(s): {', '.join(missing)}"],
+                repair_hint=hint,
+            )
 
-        hint = f"Add at least one shot for each of these sections: {', '.join(missing)}."
-        return ValidationReport(
-            ok=False,
-            failures=[f"no shot covers section(s): {', '.join(missing)}"],
-            repair_hint=hint,
-        )
+        # Real bug found via live testing: coverage alone doesn't stop shot
+        # durations from being completely disconnected from how long the
+        # section's script actually takes to read aloud -- a 573-word
+        # section (~229s of narration) got assigned just 44s of shots,
+        # producing a finished video roughly a fifth of its intended length
+        # despite the script itself being correctly sized by then.
+        project = ctx.input_artifacts["project"]
+        tone = project.params.get("tone", "conversational")
+        expected_by_section = {
+            script.section_key: narration_seconds(len(script.text.split()), tone) for script in scripts
+        }
+        actual_by_section: dict[str, int] = {}
+        for shot in storyboard.shots:
+            actual_by_section[shot.section_key] = actual_by_section.get(shot.section_key, 0) + shot.duration_s
+
+        return check_shot_durations(actual_by_section, expected_by_section)
 
     async def build_output(self, ctx: AgentContext, generated: Any) -> AgentResult:
         capability = ctx.envelope.capability
@@ -298,7 +344,13 @@ def _section_word_budget(outline: Outline, section_key: str, project_params: dic
     carve-out into the first section and the outro carve-out into the last,
     since there's no dedicated hook/outro node to spend them on.
     """
-    total_seconds = project_params.get("total_seconds", 180)
+    # 360s (6min) default -- the frontend's create-project form now sends
+    # total_seconds explicitly (a "video length" field), so this fallback
+    # only matters when script is exercised standalone (tests, direct API
+    # calls) without it. Previously defaulted to 180s (3min) with no way for
+    # a user to change it at all -- every project was a 3-minute video
+    # regardless of section_count.
+    total_seconds = project_params.get("total_seconds", 360)
     tone = project_params.get("tone", "conversational")
     weights = {section.key: section.weight for section in outline.sections}
     allocation = allocate(total_seconds, weights, tone)
