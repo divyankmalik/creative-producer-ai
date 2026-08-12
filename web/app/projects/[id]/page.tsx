@@ -2,9 +2,11 @@
 
 import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Clock, Download, GripVertical, Loader2 } from "lucide-react";
+import { ArrowLeft, BookOpen, Clock, Download, GripVertical, Loader2 } from "lucide-react";
 import { useProjectPoll } from "@/hooks/useProjectPoll";
 import { useResizableWidth } from "@/hooks/useResizableWidth";
+import { useAuth } from "@/hooks/useAuth";
+import { AuthControl } from "@/components/AuthControl";
 import { ArtifactList } from "@/components/ArtifactList";
 import { ArtifactEditor } from "@/components/ArtifactEditor";
 import { DagView } from "@/components/DagView";
@@ -12,6 +14,7 @@ import { GatePanel } from "@/components/GatePanel";
 import { StaleBanner } from "@/components/StaleBanner";
 import { NodeFailureHelp } from "@/components/NodeFailureHelp";
 import { ProductionTimeline } from "@/components/ProductionTimeline";
+import { HowToUse } from "@/components/HowToUse";
 import { Logo } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +43,7 @@ interface ProjectPageProps {
 export default function ProjectPage({ params }: ProjectPageProps) {
   const { id } = use(params);
   const { project, error, isPolling } = useProjectPoll(id);
+  const { signedIn } = useAuth();
   // The right-hand sidebar (gate + artifact list) is anchored to the right
   // edge, so dragging left should grow it -- hence invert: true.
   const { width: sidebarWidth, startDrag } = useResizableWidth({
@@ -64,6 +68,7 @@ export default function ProjectPage({ params }: ProjectPageProps) {
   const [approving, setApproving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [howToUseOpen, setHowToUseOpen] = useState(false);
 
   const loadArtifact = useCallback(async (artifactId: string) => {
     try {
@@ -225,6 +230,7 @@ export default function ProjectPage({ params }: ProjectPageProps) {
   const StatusIcon = statusMeta.icon;
   const detailOpen = Boolean(selectedArtifactId || selectedFailedNode);
   const modalTitle = selectedArtifact?.slug ?? selectedFailedNode?.nodeKey ?? "";
+  const hasPackage = project.artifacts.some((a) => a.slug === "publishing-package");
 
   return (
     <main className="flex h-screen flex-col gap-4 p-4">
@@ -243,14 +249,28 @@ export default function ProjectPage({ params }: ProjectPageProps) {
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
             live
           </span>}
-          <Button type="button" onClick={() => setTimelineOpen(true)} size="sm" variant="outline">
-            <Clock className="h-3.5 w-3.5" />
-            Timeline
-          </Button>
-          <Button type="button" onClick={handleExport} disabled={exporting} size="sm" variant="outline">
-            {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-            {exporting ? "Exporting…" : "Export package"}
-          </Button>
+          {/* title goes on a wrapping span, not the Button itself -- a
+              disabled button gets pointer-events-none, which also blocks
+              the native title tooltip from showing on hover. */}
+          <span title={signedIn ? undefined : "Sign in to use the timeline"}>
+            <Button type="button" onClick={() => setTimelineOpen(true)} disabled={!signedIn} size="sm" variant="outline">
+              <Clock className="h-3.5 w-3.5" />
+              Timeline
+            </Button>
+          </span>
+          <span title={signedIn ? undefined : "Sign in to export"}>
+            <Button type="button" onClick={handleExport} disabled={exporting || !signedIn} size="sm" variant="outline">
+              {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              {exporting ? "Exporting…" : "Export package"}
+            </Button>
+          </span>
+          <AuthControl />
+          {hasPackage && (
+            <Button type="button" onClick={() => setHowToUseOpen(true)} size="sm" variant="outline">
+              <BookOpen className="h-3.5 w-3.5" />
+              How to use
+            </Button>
+          )}
         </div>
       </header>
 
@@ -348,6 +368,8 @@ export default function ProjectPage({ params }: ProjectPageProps) {
         onClose={() => setTimelineOpen(false)}
         artifacts={project.artifacts}
       />
+
+      <HowToUse open={howToUseOpen} onClose={() => setHowToUseOpen(false)} />
     </main>
   );
 }

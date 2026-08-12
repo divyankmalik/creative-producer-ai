@@ -118,6 +118,13 @@ export interface ProjectDetail {
   artifacts: ArtifactSummary[];
 }
 
+export interface ProjectSummary {
+  id: string;
+  title: string;
+  status: ProjectStatus;
+  createdAt: string;
+}
+
 export interface ArtifactVersionSummary {
   version: number;
   summary: string | null;

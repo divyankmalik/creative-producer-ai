@@ -15,5 +15,9 @@ python-dotenv==1.0.1
 google-genai==1.3.0
 groq==0.15.0
 tavily-python==0.5.0
+pyjwt==2.10.1
+# ES256 verification (Supabase's per-session signing keys) needs this --
+# previously only present as someone else's transitive dependency.
+cryptography==50.0.0
 pytest==8.3.4
 pytest-asyncio==0.25.1

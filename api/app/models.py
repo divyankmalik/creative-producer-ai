@@ -159,6 +159,9 @@ class Project(CamelModel):
     idea: str
     status: ProjectStatus = ProjectStatus.PLANNING
     params: dict[str, Any] = Field(default_factory=dict)
+    # None means an anonymous project (created while signed out) -- still
+    # fully usable, just never shown in anyone's "my projects" list.
+    owner_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
 

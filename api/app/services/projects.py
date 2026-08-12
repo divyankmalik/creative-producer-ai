@@ -11,17 +11,45 @@ from app.db import get_supabase
 from app.models import Project, ProjectStatus
 
 
-async def create_project(title: str, idea: str, params: dict[str, Any]) -> Project:
+async def create_project(title: str, idea: str, params: dict[str, Any], owner_id: UUID | None = None) -> Project:
     """Called by POST /projects. Row starts at the model's default status
     (PLANNING) -- plan_node is what flips it to RUNNING once the Director
     picks it up.
+
+    owner_id is None for anonymous creation (no session token on the
+    request) -- project creation has always worked signed-out and still
+    does; an anonymous project just never appears in anyone's "my
+    projects" list.
     """
 
     def _insert():
-        return get_supabase().table("projects").insert({"title": title, "idea": idea, "params": params}).execute()
+        row: dict[str, Any] = {"title": title, "idea": idea, "params": params}
+        if owner_id is not None:
+            row["owner_id"] = str(owner_id)
+        return get_supabase().table("projects").insert(row).execute()
 
     response = await asyncio.to_thread(_insert)
     return Project.model_validate(response.data[0])
+
+
+async def list_projects_for_owner(owner_id: UUID) -> list[Project]:
+    """Called by GET /projects -- the signed-in user's own projects only,
+    newest first. Anonymous projects (owner_id is null) never show up here
+    for anyone, by construction of the .eq() filter below.
+    """
+
+    def _fetch():
+        return (
+            get_supabase()
+            .table("projects")
+            .select("*")
+            .eq("owner_id", str(owner_id))
+            .order("created_at", desc=True)
+            .execute()
+        )
+
+    response = await asyncio.to_thread(_fetch)
+    return [Project.model_validate(row) for row in response.data]
 
 
 async def get_project(project_id: UUID) -> Project:

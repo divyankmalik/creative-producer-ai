@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import Field
 
+from app.auth import get_current_user_id, require_user_id
 from app.director.graph import build_graph
 from app.director.state import initial_state
 from app.models import CamelModel, ProjectStatus, TaskNode
@@ -52,6 +54,17 @@ class ExportResponse(CamelModel):
     bundle: dict[str, Any]
 
 
+class ProjectSummary(CamelModel):
+    id: UUID
+    title: str
+    status: ProjectStatus
+    created_at: datetime
+
+
+class ListProjectsResponse(CamelModel):
+    projects: list[ProjectSummary]
+
+
 async def _run_director(project_id: UUID) -> None:
     """The actual background job. Runs to completion, to a pause at a gate,
     or to a caught failure -- never left to just vanish silently, since a
@@ -77,10 +90,28 @@ async def _run_director(project_id: UUID) -> None:
 async def create_project(
     request: CreateProjectRequest,
     background_tasks: BackgroundTasks,
+    owner_id: UUID | None = Depends(get_current_user_id),
 ) -> CreateProjectResponse:
-    project = await projects_service.create_project(request.title, request.idea, request.params)
+    # owner_id is None for anonymous requests (no/invalid session token) --
+    # creation has always worked signed-out and still does; see
+    # services/projects.create_project.
+    project = await projects_service.create_project(request.title, request.idea, request.params, owner_id=owner_id)
     background_tasks.add_task(_run_director, project.id)
     return CreateProjectResponse(project_id=project.id, status=project.status)
+
+
+@router.get("", response_model=ListProjectsResponse)
+async def list_my_projects(owner_id: UUID = Depends(require_user_id)) -> ListProjectsResponse:
+    """Requires a valid session (unlike every other route on this router,
+    which stay reachable signed out) -- there's no anonymous version of
+    "my projects" to fall back to.
+    """
+    projects = await projects_service.list_projects_for_owner(owner_id)
+    return ListProjectsResponse(
+        projects=[
+            ProjectSummary(id=p.id, title=p.title, status=p.status, created_at=p.created_at) for p in projects
+        ]
+    )
 
 
 @router.get("/{project_id}", response_model=ProjectDetailResponse)

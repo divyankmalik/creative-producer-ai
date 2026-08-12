@@ -3,7 +3,9 @@ import type {
   ArtifactVersionSummary,
   ProjectDetail,
   ProjectStatus,
+  ProjectSummary,
 } from "./types";
+import { supabase } from "./supabase";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -18,10 +20,19 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // Attached whenever a session exists; harmless to send when the backend
+  // isn't checking it yet (Phase 2). getSession() reads from the client's
+  // in-memory/localStorage state, not a network call, so this doesn't add
+  // a real round-trip.
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}),
       ...init?.headers,
     },
   });
@@ -65,6 +76,12 @@ export async function createProject(
 
 export async function getProject(projectId: string): Promise<ProjectDetail> {
   return request<ProjectDetail>(`/projects/${projectId}`);
+}
+
+// Requires a signed-in session -- the backend 401s without one, since
+// there's no anonymous version of "my projects" to fall back to.
+export async function listMyProjects(): Promise<{ projects: ProjectSummary[] }> {
+  return request<{ projects: ProjectSummary[] }>("/projects");
 }
 
 export async function getArtifact(artifactId: string): Promise<Artifact> {

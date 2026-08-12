@@ -6,18 +6,30 @@ inside the test.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import jwt
 from fastapi.testclient import TestClient
 
+from app.config import get_settings
 from app.main import app
 from app.models import Artifact, NodeStatus, Project, ProjectStatus, TaskNode
 
 NOW = datetime.now(timezone.utc)
 
 client = TestClient(app)
+
+
+def make_bearer_header(user_id) -> dict[str, str]:
+    token = jwt.encode(
+        {"sub": str(user_id), "aud": "authenticated", "role": "authenticated", "exp": int(time.time()) + 3600},
+        get_settings().supabase_jwt_secret,
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 def make_project(project_id, *, status=ProjectStatus.PLANNING) -> Project:
@@ -129,3 +141,63 @@ def test_export_project_wraps_bundle() -> None:
     body = response.json()
     assert body["projectId"] == str(project_id)
     assert body["bundle"] == bundle
+
+
+def test_create_project_stamps_owner_id_when_signed_in() -> None:
+    user_id = uuid4()
+    project = make_project(uuid4())
+
+    with (
+        patch(
+            "app.routes.projects.projects_service.create_project", new_callable=AsyncMock, return_value=project
+        ) as mock_create,
+        patch("app.routes.projects._run_director", new_callable=AsyncMock),
+    ):
+        response = client.post(
+            "/projects", json={"title": "T", "idea": "I", "params": {}}, headers=make_bearer_header(user_id)
+        )
+
+    assert response.status_code == 202
+    mock_create.assert_awaited_once_with("T", "I", {}, owner_id=user_id)
+
+
+def test_create_project_allows_anonymous_creation_with_no_owner() -> None:
+    """Real behavior this project has always had, and still has -- project
+    creation never required signing in, only Timeline/Export do.
+    """
+    project = make_project(uuid4())
+
+    with (
+        patch(
+            "app.routes.projects.projects_service.create_project", new_callable=AsyncMock, return_value=project
+        ) as mock_create,
+        patch("app.routes.projects._run_director", new_callable=AsyncMock),
+    ):
+        response = client.post("/projects", json={"title": "T", "idea": "I", "params": {}})
+
+    assert response.status_code == 202
+    mock_create.assert_awaited_once_with("T", "I", {}, owner_id=None)
+
+
+def test_list_my_projects_requires_auth() -> None:
+    response = client.get("/projects")
+
+    assert response.status_code == 401
+
+
+def test_list_my_projects_returns_only_the_callers_projects() -> None:
+    user_id = uuid4()
+    owned = [make_project(uuid4()), make_project(uuid4(), status=ProjectStatus.DONE)]
+
+    with patch(
+        "app.routes.projects.projects_service.list_projects_for_owner",
+        new_callable=AsyncMock,
+        return_value=owned,
+    ) as mock_list:
+        response = client.get("/projects", headers=make_bearer_header(user_id))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["projects"]) == 2
+    assert {p["status"] for p in body["projects"]} == {"planning", "done"}
+    mock_list.assert_awaited_once_with(user_id)
