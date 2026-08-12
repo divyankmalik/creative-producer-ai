@@ -6,94 +6,20 @@ import { getArtifact } from "@/lib/api";
 import type { ArtifactSummary } from "@/lib/types";
 import { Modal } from "@/components/ui/modal";
 import { Badge } from "@/components/ui/badge";
+import {
+  buildTimeline,
+  formatTime,
+  type OutlinePayload,
+  type ScriptPayload,
+  type SeoPayload,
+  type StoryboardPayload,
+  type VisualLanguagePayload,
+} from "@/lib/timeline";
 
 interface ProductionTimelineProps {
   open: boolean;
   onClose: () => void;
   artifacts: ArtifactSummary[];
-}
-
-// Local mirrors of the relevant backend payload shapes (api/app/agents/
-// content.py, design.py, publishing.py) -- artifact payloads are untyped
-// JSON on the wire, so these are read defensively, not trusted blindly.
-interface OutlineSection {
-  key: string;
-  title: string;
-}
-interface OutlinePayload {
-  sections: OutlineSection[];
-}
-interface StoryboardShot {
-  section_key: string;
-  visual: string;
-  overlay_text: string | null;
-  duration_s: number;
-}
-interface StoryboardPayload {
-  shots: StoryboardShot[];
-}
-interface ScriptPayload {
-  section_key: string;
-  text: string;
-}
-interface VisualLanguagePayload {
-  mood?: string;
-}
-interface SeoPayload {
-  seo_title?: string;
-  seo_description?: string;
-}
-
-interface TimelineBlock {
-  sectionKey: string;
-  sectionTitle: string;
-  startS: number;
-  endS: number;
-  scriptText: string | null;
-  shots: { visual: string; overlayText: string | null; startS: number; endS: number }[];
-}
-
-function formatTime(totalSeconds: number): string {
-  const m = Math.floor(totalSeconds / 60);
-  const s = Math.round(totalSeconds % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-// Groups consecutive shots sharing a section_key into one timeline block --
-// the storyboard is the only artifact with real elapsed-time information
-// (duration_s per shot), so every timestamp here is derived from it, not
-// guessed or evenly divided.
-function buildTimeline(outline: OutlinePayload, storyboard: StoryboardPayload, scripts: ScriptPayload[]): TimelineBlock[] {
-  const scriptBySection = new Map(scripts.map((s) => [s.section_key, s.text]));
-  const titleBySection = new Map(outline.sections.map((s) => [s.key, s.title]));
-
-  const blocks: TimelineBlock[] = [];
-  let cursor = 0;
-
-  for (const shot of storyboard.shots) {
-    const startS = cursor;
-    const endS = cursor + shot.duration_s;
-    cursor = endS;
-
-    const last = blocks[blocks.length - 1];
-    const shotEntry = { visual: shot.visual, overlayText: shot.overlay_text, startS, endS };
-
-    if (last && last.sectionKey === shot.section_key) {
-      last.endS = endS;
-      last.shots.push(shotEntry);
-    } else {
-      blocks.push({
-        sectionKey: shot.section_key,
-        sectionTitle: titleBySection.get(shot.section_key) ?? shot.section_key,
-        startS,
-        endS,
-        scriptText: scriptBySection.get(shot.section_key) ?? null,
-        shots: [shotEntry],
-      });
-    }
-  }
-
-  return blocks;
 }
 
 export function ProductionTimeline({ open, onClose, artifacts }: ProductionTimelineProps) {

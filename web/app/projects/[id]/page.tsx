@@ -30,6 +30,28 @@ import {
 import type { Artifact, TaskNode } from "@/lib/types";
 import { slugForNodeKey } from "@/lib/utils";
 import { PROJECT_STATUS_META } from "@/lib/status";
+// Type-only imports -- erased at compile time, so these cost nothing in the
+// bundle. The actual PDF-generation code (@react-pdf/renderer,
+// ExportPdfDocument) is loaded dynamically inside handleExport instead of
+// imported here, since that library is large (~470kB) and most page loads
+// never click Export.
+import type {
+  OutlinePayload,
+  ScriptPayload,
+  SeoPayload,
+  StoryboardPayload,
+  ThumbnailsPayload,
+  VisualLanguagePayload,
+} from "@/lib/timeline";
+
+// Shape of GET /projects/{id}/export's bundle (api/app/services/export.py's
+// build_export) -- artifact payloads are untyped JSON on the wire, read
+// defensively by slug rather than trusted blindly.
+interface ExportBundle {
+  project?: { id: string; title: string; idea: string };
+  artifacts?: Record<string, unknown>;
+  deliverable?: unknown;
+}
 
 // The backend template (api/app/director/template.py) currently defines
 // exactly one human gate, blocking content.script.* until the outline is
@@ -185,12 +207,39 @@ export default function ProjectPage({ params }: ProjectPageProps) {
   async function handleExport() {
     setExporting(true);
     try {
-      const { bundle } = await exportProject(id);
-      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      // Loaded on demand, not imported at the top of the file --
+      // @react-pdf/renderer alone is ~470kB, and most page loads never
+      // click Export, so there's no reason to ship it in this page's
+      // initial bundle.
+      const [{ bundle }, { pdf }, { ExportPdfDocument }] = await Promise.all([
+        exportProject(id),
+        import("@react-pdf/renderer"),
+        import("@/components/ExportPdfDocument"),
+      ]);
+      const b = bundle as unknown as ExportBundle;
+      const artifacts = b.artifacts ?? {};
+
+      const scripts = Object.entries(artifacts)
+        .filter(([slug]) => slug.startsWith("content-script-"))
+        .map(([, payload]) => payload as ScriptPayload);
+
+      const doc = (
+        <ExportPdfDocument
+          projectTitle={b.project?.title ?? ""}
+          projectIdea={b.project?.idea ?? ""}
+          outline={(artifacts["content-outline"] as OutlinePayload) ?? null}
+          storyboard={(artifacts["content-storyboard"] as StoryboardPayload) ?? null}
+          scripts={scripts}
+          visualLanguage={(artifacts["design-visual-language"] as VisualLanguagePayload) ?? null}
+          thumbnails={(artifacts["design-thumbnails"] as ThumbnailsPayload) ?? null}
+          seo={(artifacts["publishing-seo"] as SeoPayload) ?? null}
+        />
+      );
+      const blob = await pdf(doc).toBlob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${id}-export.json`;
+      link.download = `${id}-export.pdf`;
       link.click();
       URL.revokeObjectURL(url);
       setArtifactError(null);
