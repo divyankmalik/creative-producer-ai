@@ -24,8 +24,19 @@ class Settings(BaseSettings):
     groq_api_key: str
     tavily_api_key: str
 
+    # Comma-separated, not a JSON list -- plain text is far easier to paste
+    # into a hosting platform's env var UI than JSON-array syntax, which is
+    # what pydantic-settings would otherwise require for a real list field.
+    # Defaults cover local dev; a real deployment sets this to its actual
+    # frontend origin(s) (e.g. "https://showrunner.vercel.app").
+    allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
     max_parallel_nodes: int = 3
     default_node_timeout_s: int = 120
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache

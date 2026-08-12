@@ -144,6 +144,11 @@ async def get_project(project_id: UUID) -> ProjectDetailResponse:
 
 
 @router.get("/{project_id}/export", response_model=ExportResponse)
-async def export_project(project_id: UUID) -> ExportResponse:
+async def export_project(project_id: UUID, _: UUID = Depends(require_user_id)) -> ExportResponse:
+    # Real enforcement, not just the frontend's disabled-button gate --
+    # deliberately does NOT check the project's own owner_id, just that
+    # *some* valid session exists. Export was never meant to be private to
+    # the creator specifically (anonymous projects have no owner to check
+    # against anyway); this only stops an anonymous/unauthenticated caller.
     bundle = await export_service.build_export(project_id)
     return ExportResponse(project_id=project_id, bundle=bundle)

@@ -135,12 +135,22 @@ def test_export_project_wraps_bundle() -> None:
     bundle = {"project": {"id": str(project_id)}, "artifacts": {}, "deliverable": None}
 
     with patch("app.routes.projects.export_service.build_export", new_callable=AsyncMock, return_value=bundle):
-        response = client.get(f"/projects/{project_id}/export")
+        response = client.get(f"/projects/{project_id}/export", headers=make_bearer_header(uuid4()))
 
     assert response.status_code == 200
     body = response.json()
     assert body["projectId"] == str(project_id)
     assert body["bundle"] == bundle
+
+
+def test_export_project_requires_auth() -> None:
+    """Real enforcement, not just the frontend's disabled-button gate --
+    export costs nothing itself, but it's the thing anonymous project
+    creation was deliberately left open to still eventually gate.
+    """
+    response = client.get(f"/projects/{uuid4()}/export")
+
+    assert response.status_code == 401
 
 
 def test_create_project_stamps_owner_id_when_signed_in() -> None:
