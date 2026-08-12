@@ -1,5 +1,10 @@
 # showrunner
 
+**Live: [try it here](https://creative-producer-ai-git-main-divyankmaliks-projects.vercel.app)**
+(backend: [creative-producer-ai.onrender.com](https://creative-producer-ai.onrender.com) — free tier, so it
+sleeps after inactivity; the first request after a quiet stretch can take
+~30-60s to wake up)
+
 Multi-agent content production system: one orchestrator (the Director) coordinates
 four specialist agents over a task DAG to turn a content idea into an editable
 workspace. Agentic content pipeline with hub-and-spoke orchestration —
